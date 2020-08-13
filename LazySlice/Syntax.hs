@@ -1,5 +1,7 @@
-{-# LANGUAGE GADTs, KindSignatures #-}
+{-# LANGUAGE DeriveFunctor, GADTs, KindSignatures #-}
 module LazySlice.Syntax where
+
+-- | http://www.cse.chalmers.se/~abela/msfp08.pdf is a good guide.
 
 -- | The uninhabited type.
 data Void :: * where
@@ -14,7 +16,9 @@ data Term v
     | Sigma (Term v) (Term (Maybe v))
     | Universe
     | Var v
+    deriving Functor
 
+-- | A spine of function applications.
 data Neutral v
     = NApp (Neutral v) (Val v)
     | NVar v
@@ -22,13 +26,18 @@ data Neutral v
 -- | Weak head normal forms.
 data Whnf v
     = WNeu (Neutral v)
-    | WLam (Val v) (Term v)
+    | WLam (Env v) (Val v) (Term (Maybe v))
+    | WLet (Val v) (Whnf (Maybe v))
     | WPi (Val v) (Val (Maybe v))
     | WSigma (Val v) (Val (Maybe v))
     | WUniverse
 
+-- | An environment is a map from variables to their values. It is not to be confused
+--   with a typing context, which is a map from variables to their types.
 data Env :: * -> * where
     Empty :: Env Void
-    Binding :: Env v -> Val v -> Env (Maybe v)
+    Binding :: Env v -> Val (Maybe v) -> Env (Maybe v)
 
-data Val v = Clos (Env v) (Term v)
+data Val v
+    = Clos (Env v) (Term v) -- ^ A closure is a term in an environment.
+    | Free v
