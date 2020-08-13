@@ -9,7 +9,7 @@ data Term
     | Pi Term Term
     | Sigma Term Term
     | Universe
-    | Var Int
+    | Var Int -- ^ A variable is a De Bruijn index (which counts from the inside-out).
 
 -- | A spine of function applications.
 data Neutral
@@ -19,11 +19,20 @@ data Neutral
 -- | Weak head normal forms.
 data Whnf
     = WNeu Neutral
-    | WLam Val Val
-    | WPi Val Val
-    | WSigma Val Val
+    | WLam Val Abs
+    | WPi Val Abs
+    | WSigma Val Abs
     | WUniverse
 
-type Env = [Val]
+type Env = [Binding]
+
+data Binding
+    = Val Val
+    | Free Int -- ^ A free variable is not a De Bruijn index, and it counts from the outside in.
 
 data Val = Clos Env Term
+
+-- | And Abs and a Val share the same representation, but
+--   they have differens semantics. An Abs's term has one
+--   bound variable.
+data Abs = Abs Env Term
