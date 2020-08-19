@@ -1,34 +1,57 @@
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleContexts, FunctionalDependencies #-}
 module LazySlice.Normalize where
 
 import LazySlice.Syntax
+import Control.Monad.Cont (MonadCont, callCC)
 import Control.Monad.Except (MonadError, throwError)
+import Control.Monad.Trans.Cont (Cont)
 
 class Monad m => MonadEval m where
     inScope :: (Int -> m a) -> m a
+    reset :: m (Whnf m) -> m (Whnf m)
+    shift :: ((Whnf m -> m (Whnf m)) -> m (Whnf m)) -> m (Whnf m)
+
+handler _ = Nothing
 
 -- | Evaluate to WHNF.
-whnf :: MonadError String m => Env -> Term -> m Whnf
-whnf rho (App t u) = do
-    t <- whnf rho t
+whnf
+    :: (MonadEval m, MonadError String m)
+    => Env m -> Conts m -> Term -> Handler -> m (Whnf m)
+whnf rho kappa (App t u) h = do
+    t <- whnf rho kappa t h
     case t of
-        WLam a (Abs rho t) -> whnf (Val v : rho) t
+        WLam a (Abs rho t) -> whnf (Val v : rho) kappa t h
         WNeu neu -> return $ WNeu (NApp neu v)
         _ -> throwError "Not a function"
-    where v = Clos rho u
-whnf rho (Lam a t) =
-    return $ WLam (Clos rho a) (Abs rho t)
-whnf rho (Pi a b) =
-    return $ WPi (Clos rho a) (Abs rho b)
-whnf rho (Sigma a b) =
-    return $ WSigma (Clos rho a) (Abs rho b)
-whnf _ Universe = return WUniverse
-whnf rho (Var v) =
+    where v = Clos rho kappa h u
+whnf rho kappa (Break t u) h = do
+    t <- whnf rho kappa t h
+    case t of
+        WCont k -> do
+            u <- whnf rho kappa u h
+            k u
+        _ -> throwError "Not a continuation"
+whnf _ kappa (Cont k) _ = return $ WCont (kappa !! k)
+whnf rho kappa (Lam a t) h =
+    return $ WLam (Clos rho kappa h a) (Abs rho t)
+whnf rho kappa (Raise eff) h =
+    shift $ \k ->
+        case h eff of
+            Nothing -> throwError $ "Uncaught exception: " ++ eff
+            Just t -> whnf rho (k : kappa) t handler
+whnf rho kappa (Pi a b) h = return $ WPi (Clos rho kappa h a) (Abs rho b)
+whnf rho kappa (Sigma a b) h = return $ WSigma (Clos rho kappa h a) (Abs rho b)
+whnf rho kappa (Try t) h =
+    reset (whnf rho kappa t h)
+whnf _ _ Universe _ = return WUniverse
+whnf rho _ (Var v) _ =
     case rho !! v of
-        Val (Clos rho' t) -> whnf rho' t
+        Val (Clos rho' kappa' h t) -> whnf rho' kappa' t h
         Free v -> return $ WNeu (NVar v)
 
-unifyWhnf :: (MonadEval m, MonadError String m) => Whnf -> Whnf -> m ()
+unifyWhnf
+    :: (MonadEval m, MonadError String m)
+    => Whnf m -> Whnf m -> m ()
 unifyWhnf (WNeu neul) (WNeu neur) = unifyNeu neul neur
 unifyWhnf (WLam a t) (WLam b u) = unifyAbs t u
 unifyWhnf (WPi a b) (WPi c d) = do
@@ -40,7 +63,8 @@ unifyWhnf (WSigma a b) (WSigma c d) = do
 unifyWhnf WUniverse WUniverse = return ()
 unifyWhnf _ _ = throwError "Unify fail"
 
-unifyNeu :: (MonadEval m, MonadError String m) => Neutral -> Neutral -> m ()
+unifyNeu :: (MonadEval m, MonadError String m)
+    => Neutral m -> Neutral m -> m ()
 unifyNeu (NVar i) (NVar j)
     | i == j = return ()
     | otherwise = throwError "Unify fail"
@@ -49,15 +73,19 @@ unifyNeu (NApp nl vl) (NApp nr vr) = do
     unifyVal vl vr
 unifyNeu _ _ = throwError "Unify fail"
 
-unifyVal :: (MonadEval m, MonadError String m) => Val -> Val -> m ()
-unifyVal (Clos rho t) (Clos rho' u) = do
-    t <- whnf rho t
-    u <- whnf rho' u
+unifyVal
+    :: (MonadEval m, MonadError String m)
+    => Val m -> Val m -> m ()
+unifyVal (Clos rho kappa h t) (Clos rho' kappa' h' u) = do
+    t <- whnf rho kappa t h
+    u <- whnf rho' kappa' u h'
     unifyWhnf t u
 
-unifyAbs :: (MonadEval m, MonadError String m) => Abs -> Abs -> m ()
+unifyAbs
+    :: (MonadEval m, MonadError String m)
+    => Abs m -> Abs m -> m ()
 unifyAbs (Abs rho t) (Abs rho' u) =
     inScope $ \i -> do
-        t <- whnf (Free i : rho) t
-        u <- whnf (Free i : rho') u
+        t <- whnf (Free i : rho) [] t handler
+        u <- whnf (Free i : rho') [] u handler
         unifyWhnf t u

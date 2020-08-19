@@ -5,34 +5,43 @@ module LazySlice.Syntax where
 
 data Term
     = App Term Term
+    | Break Term Term
+    | Cont Int -- ^ Continuations use a separate De Bruijn index from the variables, counted inside-out by the effect handlers.
     | Lam Term Term
     | Pi Term Term
+    | Raise String
     | Sigma Term Term
+    | Try Term
     | Universe
     | Var Int -- ^ A variable is a De Bruijn index (which counts from the inside-out).
 
 -- | A spine of function applications.
-data Neutral
-    = NApp Neutral Val
+data Neutral m
+    = NApp (Neutral m) (Val m)
     | NVar Int
 
 -- | Weak head normal forms.
-data Whnf
-    = WNeu Neutral
-    | WLam Val Abs
-    | WPi Val Abs
-    | WSigma Val Abs
+data Whnf m
+    = WCont (Whnf m -> m (Whnf m))
+    | WNeu (Neutral m)
+    | WLam (Val m) (Abs m)
+    | WPi (Val m) (Abs m)
+    | WSigma (Val m) (Abs m)
     | WUniverse
 
-type Env = [Binding]
+-- | The environment of values.
+type Env m = [Binding m]
 
-data Binding
-    = Val Val
+-- | The environment of continuations.
+type Conts m = [Whnf m -> m (Whnf m)]
+
+data Binding m
+    = Val (Val m)
     | Free Int -- ^ A free variable is not a De Bruijn index, and it counts from the outside in.
 
-data Val = Clos Env Term
+-- | A handler catches an effect.
+type Handler = String -> Maybe Term
 
--- | And Abs and a Val share the same representation, but
---   they have differens semantics. An Abs's term has one
---   bound variable.
-data Abs = Abs Env Term
+data Val m = Clos (Env m) (Conts m) Handler Term
+
+data Abs m = Abs (Env m) Term
