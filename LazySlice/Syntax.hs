@@ -1,9 +1,6 @@
 {-# LANGUAGE FlexibleContexts, FunctionalDependencies, GeneralizedNewtypeDeriving #-}
 module LazySlice.Syntax where
 
-import Control.Monad.Reader (MonadReader, ask, local)
-import Control.Monad.Trans.Cont (ContT)
-import Control.Monad.Trans.Except (ExceptT)
 import Control.Monad.Trans.Reader (Reader)
 
 -- | http://www.cse.chalmers.se/~abela/msfp08.pdf is a good guide.
@@ -12,7 +9,7 @@ import Control.Monad.Trans.Reader (Reader)
 data Term
     = App Term Term
     | Cont Int -- ^ Continuations use a separate De Bruijn index from the variables, counted inside-out by the effect handlers.
-    | Lam Term Term
+    | Lam (Maybe Term) Term
     | Pi Term Term
     | Raise String
     | Sigma Term Term
@@ -21,26 +18,6 @@ data Term
     | Var Int -- ^ A variable is a De Bruijn index (which counts from the inside-out).
 
 type ContTy = (Reader Int) (Either String Whnf)
-
-newtype Eval a = Eval
-    { eval :: ContT (Either String Whnf) (Reader Int) (Either String a) }
-
-instance Functor Eval where
-    fmap f (Eval e) = Eval $ fmap (fmap f) e
-
-instance Applicative Eval where
-    pure a = Eval $ pure $ Right a
-    (Eval f) <*> (Eval a) = Eval $ (<*>) <$> f <*> a
-
-instance Monad Eval where
-    (Eval a) >>= f = Eval $ a >>= go
-        where
-            go (Left e) = pure $ Left e
-            go (Right a) = eval $ f a
-
-instance MonadReader Int Eval where
-    ask = Eval $ fmap Right ask
-    local f (Eval e) = Eval $ local f e
 
 -- | A spine of function applications.
 data Neutral
@@ -51,7 +28,7 @@ data Neutral
 data Whnf
     = WCont (Either String Whnf -> ContTy)
     | WNeu Neutral
-    | WLam Val Abs
+    | WLam (Maybe Val) Abs
     | WPi Val Abs
     | WSigma Val Abs
     | WUniverse
