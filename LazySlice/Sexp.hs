@@ -40,6 +40,9 @@ elabAbs f (List [Atom name, ty]:rest) =
     f name <$> elabExpr ty <*> elabAbs f rest
 elabAbs _ _ = Left "?"
 
+elabModule :: [Sexp] -> Either String Module
+elabModule sexps = Module <$> mapM elabDecl sexps
+
 elabDecl :: Sexp -> Either String Decl
 elabDecl (List [Atom "define", Atom name, sexp]) = do
     expr <- elabExpr sexp

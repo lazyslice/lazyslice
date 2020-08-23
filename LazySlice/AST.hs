@@ -14,3 +14,5 @@ data Decl
     = Decl String Expr
     | Define String Expr
     deriving Show
+
+data Module = Module [Decl]

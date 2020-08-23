@@ -2,9 +2,14 @@
 module LazySlice.Syntax where
 
 import Control.Monad.Trans.Reader (Reader)
+import Data.Map (Map)
 
 -- | http://www.cse.chalmers.se/~abela/msfp08.pdf is a good guide.
 --  http://www.davidchristiansen.dk/tutorials/nbe/ presents similar code in Racket.
+
+data Module = Module
+    { termDefs :: Map String (Term, Term) }
+    deriving Show
 
 data Term
     = App Term Term
@@ -16,6 +21,7 @@ data Term
     | Try Term
     | Universe
     | Var Int -- ^ A variable is a De Bruijn index (which counts from the inside-out).
+    deriving Show
 
 type ContTy = (Reader Int) (Either String Whnf)
 

@@ -133,7 +133,8 @@ infer gamma (Lam (Just t) u) = do
     check gamma t WUniverse
     t <- prompt $ whnf [] [] t handler
     infer (t:gamma) u
-infer gamma (Lam Nothing u) = throwError "Cannot infer lambda"
+infer gamma (Lam Nothing u) =
+    throwError "Cannot infer lambda without annotation."
 infer gamma (Sigma t u) = do
     check gamma t WUniverse
     t <- prompt $ whnf [] [] t handler
@@ -151,7 +152,8 @@ check gamma (Lam Nothing t) ty =
     case ty of
         WPi a b -> do
             a <- prompt $ whnfVal a
-            b <- inScope $ \i -> prompt $ whnfAbs [] handler b (Free i)
+            b <- inScope $ \i ->
+                prompt $ whnfAbs [] handler b (Free i)
             check (a:gamma) t b
 check gamma term ty = do
     ty' <- infer gamma term
