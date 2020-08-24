@@ -49,7 +49,7 @@ elabDecl (List [Atom "define", Atom name, sexp]) = do
     pure $ Define name expr
 elabDecl (List [Atom ":", Atom name, sexp]) = do
     expr <- elabExpr sexp
-    pure $ Decl name expr
+    pure $ Declare name expr
 elabDecl _ = Left "Unknown declaration form."
 
 elabExpr :: Sexp -> Either String Expr

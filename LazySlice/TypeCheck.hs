@@ -1,19 +1,45 @@
-{-# LANGUAGE ApplicativeDo, FlexibleContexts, FlexibleInstances, FunctionalDependencies, GeneralizedNewtypeDeriving #-}
-module LazySlice.Normalize where
+{-# LANGUAGE ApplicativeDo, FlexibleContexts, FlexibleInstances, FunctionalDependencies #-}
+module LazySlice.TypeCheck where
 
 import LazySlice.Syntax
 import Control.Monad.Except (MonadError, throwError, catchError)
 import Control.Monad.Reader (MonadReader, ask, local)
 import Control.Monad.Trans (lift)
 import Control.Monad.Trans.Cont (ContT, runContT, resetT, shiftT)
-import Control.Monad.Trans.Except (ExceptT)
-import Control.Monad.Trans.Reader (Reader, runReader)
+import Control.Monad.Trans.Except (ExceptT, runExcept)
+import Control.Monad.Trans.Reader (Reader, runReader, runReaderT)
+import Data.Map (Map, empty, (!?), insert)
+
+typecheck :: Module -> Either String ()
+typecheck modl = runExcept $ runReaderT (checkModule modl) $ empty
+
+checkModule :: (MonadError String m, MonadReader Table m) => Module -> m ()
+checkModule (Module decls) = go decls
+    where
+        go :: (MonadError String m, MonadReader Table m) => [Decl] -> m ()
+        go [] = pure ()
+        go (Declare name ty:decls) = do
+            table <- ask
+            case run (check [] ty WUniverse) table of
+                Left e -> throwError e
+                Right () -> case run (whnf [] [] ty handler) table of
+                    Left e -> throwError e
+                    Right ty -> local (insert name (ty, Nothing)) $ go decls
+        go (Define name def:decls) = do
+            table <- ask
+            case table !? name of
+                Nothing -> throwError $ "Not found: " ++ name
+                Just (_, Just _) -> throwError $ "Redefined: " ++ name
+                Just (ty, Nothing) -> case run (check [] def ty) table of
+                    Left e -> throwError e
+                    Right () ->
+                        local (insert name (ty, Just def)) $ go decls
 
 newtype Eval r a = Eval
-    { eval :: ContT (Either String r) (Reader Int) (Either String a) }
+    { eval :: ContT (Either String r) (Reader (Table, Int)) (Either String a) }
 
-run :: Eval a a -> Either String a
-run (Eval e) = runReader (runContT e pure) 0
+run :: Eval a a -> Table -> Either String a
+run (Eval e) table = runReader (runContT e pure) (table, 0)
 
 instance Functor (Eval r) where
     fmap f (Eval e) = Eval $ fmap (fmap f) e
@@ -28,7 +54,7 @@ instance Monad (Eval r) where
             go (Left e) = pure $ Left e
             go (Right a) = eval $ f a
 
-instance MonadReader Int (Eval r) where
+instance MonadReader (Table, Int) (Eval r) where
     ask = Eval $ fmap Right ask
     local f (Eval e) = Eval $ local f e
 
@@ -41,7 +67,9 @@ instance MonadError [Char] (Eval r) where
             Left e -> eval $ handle e
 
 inScope :: (Int -> Eval r a) -> Eval r a
-inScope f = local (+1) (ask >>= f)
+inScope f =
+    local (\(table, idx) -> (table, idx + 1))
+        (ask >>= \(_, idx) -> f idx)
 
 prompt :: Eval Whnf Whnf -> Eval r Whnf
 prompt (Eval m) = Eval $ resetT m
@@ -64,6 +92,12 @@ whnf rho kappa (App t u) h = do
         _ -> throwError "Not a function"
     where v = Clos rho kappa h u
 whnf _ kappa (Cont k) _ = pure $ WCont (kappa !! k)
+whnf rho kappa (Def global) h = do
+    (table, _) <- ask
+    case table !? global of
+        Just (_, Just def) -> whnf rho kappa def h
+        Just (_, Nothing) -> throwError $ "Undefined global " ++ global
+        Nothing -> throwError $ "Unbound global " ++ global
 whnf rho kappa (Lam a t) h =
     pure $ WLam (fmap (Clos rho kappa h) a) (Abs rho t)
 whnf rho kappa (Raise eff) h =
@@ -129,6 +163,11 @@ infer gamma (App t u) = do
             check gamma u a
             prompt $ whnfAbs [] handler b (Val $ Clos [] [] handler t)
         _ -> throwError "?"
+infer gamma (Def global) = do
+    (table, _) <- ask
+    case table !? global of
+        Nothing -> throwError $ "Unbound global " ++ global
+        Just (ty, _) -> pure ty
 infer gamma (Lam (Just t) u) = do
     check gamma t WUniverse
     t <- prompt $ whnf [] [] t handler

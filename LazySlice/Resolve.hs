@@ -15,7 +15,29 @@ data Symtable = Symtable
     { vars :: Map String Name }
 
 resolve :: AST.Module -> Either String Syn.Module
-resolve modl = runExcept (runReaderT (resolveModule modl) $ Symtable empty)
+resolve modl = runExcept $ runReaderT (resolveModule modl) $ Symtable empty
+
+resolveModule :: (MonadError String m, MonadReader Symtable m) => AST.Module -> m Syn.Module
+resolveModule (AST.Module decls) = do
+        defs <- go decls
+        pure $ Syn.Module defs
+    where
+        go :: (MonadError String m, MonadReader Symtable m)
+           => [AST.Decl] -> m [Syn.Decl]
+        go [] = pure []
+        go (AST.Declare name ty:decls) = do
+            ty <- resolveExpr ty
+            rest <- global name $ go decls
+            pure $ Syn.Declare name ty:rest
+        go (AST.Define name expr:decls) = do
+            expr <- resolveExpr expr
+            rest <- go decls
+            pure $ Syn.Define name expr:rest
+
+global :: (MonadReader Symtable m) => String -> m a -> m a
+global name =
+    local $ \symtable ->
+        Symtable { vars = insert name (Global name) $ vars symtable }
 
 intro :: MonadReader Symtable m => String -> m Syn.Term -> m Syn.Term
 intro name = local $ \symtable ->
@@ -25,33 +47,6 @@ intro name = local $ \symtable ->
     where
         up (Local v) = Local $ v + 1
         up other = other
-
-resolveModule :: (MonadError String m, MonadReader Symtable m) => AST.Module -> m Syn.Module
-resolveModule (AST.Module decls) = do
-        defs <- go empty decls
-        pure $ Syn.Module defs
-    where
-        go :: (MonadError String m, MonadReader Symtable m)
-           => Map String (Syn.Term, Maybe Syn.Term)
-           -> [AST.Decl]
-           -> m (Map String (Syn.Term, Syn.Term))
-        go defs [] = do
-            traverseWithKey (\name (ty, def) ->
-                case def of
-                    Just def -> pure (ty, def)
-                    Nothing -> throwError $ "No definition for " ++ name)
-                defs
-        go defs (AST.Decl name ty:decls) = do
-            ty <- resolveExpr ty
-            go (insert name (ty, Nothing) defs) decls
-        go defs (AST.Define name expr:decls) =
-            case defs !? name of
-                Just (ty, Nothing) -> do
-                    expr <- resolveExpr expr
-                    go (insert name (ty, Just expr) defs) decls
-                Just (_, Just _) ->
-                    throwError $ "Multiple definitions for " ++ name
-                Nothing -> throwError $ "No type declaration for " ++ name
 
 resolveExpr
     :: (MonadError String m, MonadReader Symtable m)
@@ -77,5 +72,5 @@ resolveExpr (AST.Var name) = do
     symtable <- ask
     case vars symtable !? name of
         Just (Local v) -> pure $ Syn.Var v
-        Just (Global _) -> throwError "Unimplemented"
+        Just (Global v) -> pure $ Syn.Def v
         Nothing -> throwError $ "Unbound variable " ++ name

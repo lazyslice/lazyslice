@@ -8,12 +8,18 @@ import Data.Map (Map)
 --  http://www.davidchristiansen.dk/tutorials/nbe/ presents similar code in Racket.
 
 data Module = Module
-    { termDefs :: Map String (Term, Term) }
+    { decls :: [Decl] }
+    deriving Show
+
+data Decl
+    = Declare String Term
+    | Define String Term
     deriving Show
 
 data Term
     = App Term Term
     | Cont Int -- ^ Continuations use a separate De Bruijn index from the variables, counted inside-out by the effect handlers.
+    | Def String -- ^ A global definition.
     | Lam (Maybe Term) Term
     | Pi Term Term
     | Raise String
@@ -23,7 +29,9 @@ data Term
     | Var Int -- ^ A variable is a De Bruijn index (which counts from the inside-out).
     deriving Show
 
-type ContTy = (Reader Int) (Either String Whnf)
+type Table = Map String (Whnf, Maybe Term)
+
+type ContTy = (Reader (Table, Int)) (Either String Whnf)
 
 -- | A spine of function applications.
 data Neutral
