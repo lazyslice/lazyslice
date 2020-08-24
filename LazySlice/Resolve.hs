@@ -67,6 +67,10 @@ resolveExpr (AST.Sigma x t u) = do
     t <- resolveExpr t
     u <- intro x $ resolveExpr u
     pure $ Syn.Sigma t u
+resolveExpr (AST.Pair t u) =
+    Syn.Pair <$> resolveExpr t <*> resolveExpr u
+resolveExpr AST.Triv = pure Syn.Triv
+resolveExpr AST.Unit = pure Syn.Unit
 resolveExpr AST.Univ = pure Syn.Universe
 resolveExpr (AST.Var name) = do
     symtable <- ask

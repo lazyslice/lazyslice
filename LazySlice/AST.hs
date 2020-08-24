@@ -4,8 +4,11 @@ data Expr
     = App Expr Expr
     | Hole
     | Lam String Expr
+    | Pair Expr Expr
     | Pi String Expr Expr
     | Sigma String Expr Expr
+    | Triv
+    | Unit
     | Univ
     | Var String
     deriving Show

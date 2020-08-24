@@ -35,6 +35,10 @@ checkModule (Module decls) = go decls
                     Right () ->
                         local (insert name (ty, Just def)) $ go decls
 
+get [] n = throwError $ "Out of bounds: " ++ show n
+get (x:_) 0 = pure x
+get (_:xs) n = get xs (n - 1)
+
 newtype Eval r a = Eval
     { eval :: ContT (Either String r) (Reader (Table, Int)) (Either String a) }
 
@@ -100,6 +104,8 @@ whnf rho kappa (Def global) h = do
         Nothing -> throwError $ "Unbound global " ++ global
 whnf rho kappa (Lam a t) h =
     pure $ WLam (fmap (Clos rho kappa h) a) (Abs rho t)
+whnf rho kappa (Pair t u) h =
+    pure $ WPair (Clos rho kappa h t) (Clos rho kappa h u)
 whnf rho kappa (Raise eff) h =
     control $ \k ->
         case h eff of
@@ -107,10 +113,13 @@ whnf rho kappa (Raise eff) h =
             Just t -> whnf rho (k : kappa) t handler
 whnf rho kappa (Pi a b) h = pure $ WPi (Clos rho kappa h a) (Abs rho b)
 whnf rho kappa (Sigma a b) h = pure $ WSigma (Clos rho kappa h a) (Abs rho b)
+whnf _ _ Triv _ = pure WTriv
 whnf rho kappa (Try t) h = prompt (whnf rho kappa t h)
+whnf _ _ Unit _ = pure WUnit
 whnf _ _ Universe _ = pure WUniverse
-whnf rho _ (Var v) _ =
-    case rho !! v of
+whnf rho _ (Var v) _ = do
+    r <- get rho v
+    case r of
         Val val -> whnfVal val
         Free v -> pure $ WNeu (NVar v)
 
@@ -123,13 +132,18 @@ whnfAbs kappa h (Abs env t) v = whnf (v:env) kappa t h
 unifyWhnf :: Whnf -> Whnf -> Eval r ()
 unifyWhnf (WNeu neul) (WNeu neur) = unifyNeu neul neur
 unifyWhnf (WLam a t) (WLam b u) = unifyAbs t u
+unifyWhnf (WPair a b) (WPair c d) = do
+    unifyVal a c
+    unifyVal b d
 unifyWhnf (WPi a b) (WPi c d) = do
     unifyVal a c
     unifyAbs b d
 unifyWhnf (WSigma a b) (WSigma c d) = do
     unifyVal a c
     unifyAbs b d
-unifyWhnf WUniverse WUniverse = return ()
+unifyWhnf WTriv WTriv = pure ()
+unifyWhnf WUnit WUnit = pure ()
+unifyWhnf WUniverse WUniverse = pure ()
 unifyWhnf _ _ = throwError "Unify fail"
 
 unifyNeu :: Neutral -> Neutral -> Eval r ()
@@ -154,6 +168,12 @@ unifyAbs (Abs rho t) (Abs rho' u) =
         u <- prompt $ whnf (Free i : rho') [] u handler
         unifyWhnf t u
 
+envFromCtx :: [Whnf] -> Env
+envFromCtx = go 0
+    where
+        go n [] = []
+        go n (_:xs) = Free n : go (n + 1) xs
+
 infer :: [Whnf] -> Term -> Eval r Whnf
 infer gamma (App t u) = do
     fTy <- infer gamma t
@@ -161,39 +181,45 @@ infer gamma (App t u) = do
         WPi a b -> do
             a <- prompt $ whnfVal a
             check gamma u a
-            prompt $ whnfAbs [] handler b (Val $ Clos [] [] handler t)
+            prompt $ whnfAbs [] handler b (Val $ Clos (envFromCtx gamma) [] handler t)
         _ -> throwError "?"
-infer gamma (Def global) = do
+infer _ (Def global) = do
     (table, _) <- ask
     case table !? global of
         Nothing -> throwError $ "Unbound global " ++ global
         Just (ty, _) -> pure ty
 infer gamma (Lam (Just t) u) = do
     check gamma t WUniverse
-    t <- prompt $ whnf [] [] t handler
+    t <- prompt $ whnf (envFromCtx gamma) [] t handler
     infer (t:gamma) u
-infer gamma (Lam Nothing u) =
+infer _ (Lam Nothing _) =
     throwError "Cannot infer lambda without annotation."
+infer _ (Pair _ _) = throwError "Cannot infer pair."
 infer gamma (Sigma t u) = do
     check gamma t WUniverse
-    t <- prompt $ whnf [] [] t handler
+    t <- prompt $ whnf (envFromCtx gamma) [] t handler
     check (t:gamma) u WUniverse
     pure WUniverse
 infer gamma (Pi t u) = do
     check gamma t WUniverse
-    t <- prompt $ whnf [] [] t handler
+    t <- prompt $ whnf (envFromCtx gamma) [] t handler
     check (t:gamma) u WUniverse
     pure WUniverse
+infer _ Triv = pure WUnit
+infer _ Unit = pure WUniverse
 infer _ Universe = pure WUniverse
+infer gamma (Var n) = get gamma n
 
 check :: [Whnf] -> Term -> Whnf -> Eval r ()
-check gamma (Lam Nothing t) ty =
-    case ty of
-        WPi a b -> do
-            a <- prompt $ whnfVal a
-            b <- inScope $ \i ->
-                prompt $ whnfAbs [] handler b (Free i)
-            check (a:gamma) t b
+check gamma (Lam Nothing t) (WPi a b) = do
+    a <- prompt $ whnfVal a
+    b <- inScope $ \i -> prompt $ whnfAbs [] handler b (Free i)
+    check (a:gamma) t b
+check gamma (Pair t u) (WSigma a b) = do
+    a <- prompt $ whnfVal a
+    check gamma t a
+    b <- prompt $ whnfAbs [] handler b (Val $ Clos (envFromCtx gamma) [] handler t)
+    check (a:gamma) u b
 check gamma term ty = do
     ty' <- infer gamma term
     unifyWhnf ty ty'

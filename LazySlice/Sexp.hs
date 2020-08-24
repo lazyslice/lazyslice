@@ -35,11 +35,6 @@ program = do
     decls <- many (sexp <* spaces)
     pure decls
 
-elabAbs f [sexp] = elabExpr sexp
-elabAbs f (List [Atom name, ty]:rest) =
-    f name <$> elabExpr ty <*> elabAbs f rest
-elabAbs _ _ = Left "?"
-
 elabModule :: [Sexp] -> Either String Module
 elabModule sexps = Module <$> mapM elabDecl sexps
 
@@ -52,8 +47,25 @@ elabDecl (List [Atom ":", Atom name, sexp]) = do
     pure $ Declare name expr
 elabDecl _ = Left "Unknown declaration form."
 
+elabAbs f [sexp] = elabExpr sexp
+elabAbs f (List [Atom name, ty]:rest) =
+    f name <$> elabExpr ty <*> elabAbs f rest
+elabAbs _ _ = Left "?"
+
+elabLambda :: [Sexp] -> Sexp -> Either String Expr
+elabLambda [] body = elabExpr body
+elabLambda (Atom param:xs) body = Lam param <$> elabLambda xs body
+
+elabTuple :: [Sexp] -> Either String Expr
+elabTuple [] =
+    Left "Cannot have empty tuple. (Maybe you meant to use trivial?)"
+elabTuple [x] = elabExpr x
+elabTuple (x:xs) = Pair <$> elabExpr x <*> elabTuple xs
+
 elabExpr :: Sexp -> Either String Expr
 elabExpr (Atom "type") = pure Univ
+elabExpr (Atom "unit") = pure Unit
+elabExpr (Atom "trivial") = pure Triv
 elabExpr (Atom name) = pure $ Var name
 elabExpr (List (Atom "apply":f:args)) = do
     f <- elabExpr f
@@ -61,6 +73,9 @@ elabExpr (List (Atom "apply":f:args)) = do
     pure $ foldl App f args
 elabExpr (List (Atom "exists":rest)) = elabAbs Sigma rest
 elabExpr (List (Atom "forall":rest)) = elabAbs Pi rest
+elabExpr (List [Atom "lambda", List params, body]) =
+    elabLambda params body
+elabExpr (List (Atom "tuple":rest)) = elabTuple rest
 elabExpr (List (f:args)) = do
     f <- elabExpr f
     args <- mapM elabExpr args

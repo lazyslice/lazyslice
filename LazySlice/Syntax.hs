@@ -21,10 +21,13 @@ data Term
     | Cont Int -- ^ Continuations use a separate De Bruijn index from the variables, counted inside-out by the effect handlers.
     | Def String -- ^ A global definition.
     | Lam (Maybe Term) Term
+    | Pair Term Term
     | Pi Term Term
     | Raise String
     | Sigma Term Term
+    | Triv
     | Try Term
+    | Unit
     | Universe
     | Var Int -- ^ A variable is a De Bruijn index (which counts from the inside-out).
     deriving Show
@@ -43,8 +46,11 @@ data Whnf
     = WCont (Either String Whnf -> ContTy)
     | WNeu Neutral
     | WLam (Maybe Val) Abs
+    | WPair Val Val
     | WPi Val Abs
     | WSigma Val Abs
+    | WTriv
+    | WUnit
     | WUniverse
 
 -- | The environment of values.
