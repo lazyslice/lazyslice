@@ -144,7 +144,8 @@ unifyWhnf (WSigma a b) (WSigma c d) = do
 unifyWhnf WTriv WTriv = pure ()
 unifyWhnf WUnit WUnit = pure ()
 unifyWhnf WUniverse WUniverse = pure ()
-unifyWhnf _ _ = throwError "Unify fail"
+unifyWhnf a b =
+    throwError $ "Unify fail: " ++ show a ++ " " ++ show b
 
 unifyNeu :: Neutral -> Neutral -> Eval r ()
 unifyNeu (NVar i) (NVar j)
@@ -169,10 +170,10 @@ unifyAbs (Abs rho t) (Abs rho' u) =
         unifyWhnf t u
 
 envFromCtx :: [Whnf] -> Env
-envFromCtx = go 0
+envFromCtx ls = go (length ls) ls
     where
         go n [] = []
-        go n (_:xs) = Free n : go (n + 1) xs
+        go n (_:xs) = Free (n - 1) : go (n - 1) xs
 
 infer :: [Whnf] -> Term -> Eval r Whnf
 infer gamma (App t u) = do
@@ -181,8 +182,8 @@ infer gamma (App t u) = do
         WPi a b -> do
             a <- prompt $ whnfVal a
             check gamma u a
-            prompt $ whnfAbs [] handler b (Val $ Clos (envFromCtx gamma) [] handler t)
-        _ -> throwError "?"
+            prompt $ whnfAbs [] handler b (Val $ Clos (envFromCtx gamma) [] handler u)
+        _ -> throwError "Not a pi type"
 infer _ (Def global) = do
     (table, _) <- ask
     case table !? global of
@@ -213,8 +214,9 @@ infer gamma (Var n) = get gamma n
 check :: [Whnf] -> Term -> Whnf -> Eval r ()
 check gamma (Lam Nothing t) (WPi a b) = do
     a <- prompt $ whnfVal a
-    b <- inScope $ \i -> prompt $ whnfAbs [] handler b (Free i)
-    check (a:gamma) t b
+    inScope $ \i -> do
+        b <- prompt $ whnfAbs [] handler b (Free i)
+        check (a:gamma) t b
 check gamma (Pair t u) (WSigma a b) = do
     a <- prompt $ whnfVal a
     check gamma t a

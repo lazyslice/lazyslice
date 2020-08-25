@@ -40,6 +40,7 @@ type ContTy = (Reader (Table, Int)) (Either String Whnf)
 data Neutral
     = NApp Neutral Val
     | NVar Int
+    deriving Show
 
 -- | Weak head normal forms.
 data Whnf
@@ -53,6 +54,22 @@ data Whnf
     | WUnit
     | WUniverse
 
+instance Show Whnf where
+    show (WCont _) = "<cont>"
+    show (WNeu n) =
+        "(WNeu " ++ show n ++ ")"
+    show (WLam m a) =
+        "(lam " ++ show m ++ " " ++ show a ++ ")"
+    show (WPair a b) =
+        "(tuple " ++ show a ++ " " ++ show b ++ ")"
+    show (WPi a b) =
+        "(pi " ++ show a ++ " " ++ show b ++ ")"
+    show (WSigma a b) =
+        "(sigma " ++ show a ++ " " ++ show b ++ ")"
+    show WTriv = "trivial"
+    show WUnit = "unit"
+    show WUniverse = "type"
+
 -- | The environment of values.
 type Env = [Binding]
 
@@ -62,10 +79,19 @@ type Conts = [Either String Whnf -> ContTy]
 data Binding
     = Val Val
     | Free Int -- ^ A free variable is not a De Bruijn index, and it counts from the outside in.
+    deriving Show
 
 -- | A handler catches an effect.
 type Handler = String -> Maybe Term
 
 data Val = Clos Env Conts Handler Term
 
+instance Show Val where
+    show (Clos env _ _ term) =
+        "(clos " ++ show env ++ " " ++ show term ++ ")"
+
 data Abs = Abs Env Term
+
+instance Show Abs where
+    show (Abs env term) =
+        "(abstr " ++ show env ++ " " ++ show term ++ ")"
