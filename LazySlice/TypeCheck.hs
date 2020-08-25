@@ -92,7 +92,7 @@ whnf rho kappa (App t u) h = do
             u <- whnf rho kappa u h
             Eval $ lift $ (k (Right u))
         WLam _ (Abs rho t) -> whnf (Val v : rho) kappa t h
-        WNeu neu -> pure $ WNeu (NApp neu v)
+        WNeu hd spine -> pure $ WNeu hd $ v:spine
         _ -> throwError "Not a function"
     where v = Clos rho kappa h u
 whnf _ kappa (Cont k) _ = pure $ WCont (kappa !! k)
@@ -121,7 +121,7 @@ whnf rho _ (Var v) _ = do
     r <- get rho v
     case r of
         Val val -> whnfVal val
-        Free v -> pure $ WNeu (NVar v)
+        Free v -> pure $ WNeu v []
 
 whnfVal :: Val -> Eval Whnf Whnf
 whnfVal (Clos rho kappa h t) = whnf rho kappa t h
@@ -130,7 +130,11 @@ whnfAbs :: Conts -> Handler -> Abs -> Binding -> Eval Whnf Whnf
 whnfAbs kappa h (Abs env t) v = whnf (v:env) kappa t h
 
 unifyWhnf :: Whnf -> Whnf -> Eval r ()
-unifyWhnf (WNeu neul) (WNeu neur) = unifyNeu neul neur
+unifyWhnf (WNeu hdl spinel) (WNeu hdr spiner)
+    | hdl == hdr = mapM_ (uncurry unifyVal) $ zip spinel spiner
+    | otherwise =
+        throwError
+            $ "Unify fail: " ++ show hdl ++ " " ++ show hdr
 unifyWhnf (WLam a t) (WLam b u) = unifyAbs t u
 unifyWhnf (WPair a b) (WPair c d) = do
     unifyVal a c
@@ -146,15 +150,6 @@ unifyWhnf WUnit WUnit = pure ()
 unifyWhnf WUniverse WUniverse = pure ()
 unifyWhnf a b =
     throwError $ "Unify fail: " ++ show a ++ " " ++ show b
-
-unifyNeu :: Neutral -> Neutral -> Eval r ()
-unifyNeu (NVar i) (NVar j)
-    | i == j = return ()
-    | otherwise = throwError "Unify fail"
-unifyNeu (NApp nl vl) (NApp nr vr) = do
-    unifyNeu nl nr
-    unifyVal vl vr
-unifyNeu _ _ = throwError "Unify fail"
 
 unifyVal :: Val -> Val -> Eval r ()
 unifyVal (Clos rho kappa h t) (Clos rho' kappa' h' u) = do

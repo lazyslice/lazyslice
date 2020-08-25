@@ -36,16 +36,10 @@ type Table = Map String (Whnf, Maybe Term)
 
 type ContTy = (Reader (Table, Int)) (Either String Whnf)
 
--- | A spine of function applications.
-data Neutral
-    = NApp Neutral Val
-    | NVar Int
-    deriving Show
-
 -- | Weak head normal forms.
 data Whnf
     = WCont (Either String Whnf -> ContTy)
-    | WNeu Neutral
+    | WNeu Int [Val] -- head, spine
     | WLam (Maybe Val) Abs
     | WPair Val Val
     | WPi Val Abs
@@ -56,8 +50,8 @@ data Whnf
 
 instance Show Whnf where
     show (WCont _) = "<cont>"
-    show (WNeu n) =
-        "(WNeu " ++ show n ++ ")"
+    show (WNeu hd spine) =
+        "(WNeu " ++ show hd ++ " " ++ show spine ++ ")"
     show (WLam m a) =
         "(lam " ++ show m ++ " " ++ show a ++ ")"
     show (WPair a b) =
