@@ -25,6 +25,10 @@ resolveModule (AST.Module decls) = do
         go :: (MonadError String m, MonadReader Symtable m)
            => [AST.Decl] -> m [Syn.Decl]
         go [] = pure []
+        go (AST.Data name def:decls) = global name $ do
+            resolveDatatype def $ \def -> do
+                rest <- go decls
+                pure $ Syn.Data name def:rest
         go (AST.Declare name ty:decls) = do
             ty <- resolveExpr ty
             rest <- global name $ go decls
@@ -47,6 +51,14 @@ intro name = local $ \symtable ->
     where
         up (Local v) = Local $ v + 1
         up other = other
+
+resolveDatatype
+    :: (MonadError String m, MonadReader Symtable m)
+    => [(String, AST.Expr)] -> ([(String, Syn.Term)] -> m a) -> m a
+resolveDatatype [] k = k []
+resolveDatatype ((name, expr):xs) k = do
+    expr <- resolveExpr expr
+    global name $ resolveDatatype xs $ \rest -> k $ (name, expr):rest
 
 resolveExpr
     :: (MonadError String m, MonadReader Symtable m)

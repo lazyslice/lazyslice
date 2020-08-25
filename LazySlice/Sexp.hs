@@ -39,6 +39,9 @@ elabModule :: [Sexp] -> Either String Module
 elabModule sexps = Module <$> mapM elabDecl sexps
 
 elabDecl :: Sexp -> Either String Decl
+elabDecl (List (Atom "data":Atom name:datacons)) = do
+    datacons <- elabData datacons
+    pure $ Data name datacons
 elabDecl (List [Atom "define", Atom name, sexp]) = do
     expr <- elabExpr sexp
     pure $ Define name expr
@@ -46,6 +49,14 @@ elabDecl (List [Atom ":", Atom name, sexp]) = do
     expr <- elabExpr sexp
     pure $ Declare name expr
 elabDecl _ = Left "Unknown declaration form."
+
+elabData :: [Sexp] -> Either String [(String, Expr)]
+elabData [] = Right []
+elabData (List [Atom ":", Atom name, sexp]:datacons) = do
+    expr <- elabExpr sexp
+    rest <- elabData datacons
+    pure $ (name, expr):rest
+elabData (_:_) = Left "?"
 
 elabAbs f [sexp] = elabExpr sexp
 elabAbs f (List [Atom name, ty]:rest) =

@@ -2,7 +2,7 @@
 module LazySlice.TypeCheck where
 
 import LazySlice.Syntax
-import Control.Monad.Except (MonadError, throwError, catchError)
+import Control.Monad.Except (MonadError, throwError, catchError, liftEither)
 import Control.Monad.Reader (MonadReader, ask, local)
 import Control.Monad.Trans (lift)
 import Control.Monad.Trans.Cont (ContT, runContT, resetT, shiftT)
@@ -18,22 +18,26 @@ checkModule (Module decls) = go decls
     where
         go :: (MonadError String m, MonadReader Table m) => [Decl] -> m ()
         go [] = pure ()
+        go (Data name datacons:decls) = do
+            table <- ask
+            case table !? name of
+                Nothing -> throwError $ "Not found: " ++ name
+                Just (ty, Undef) ->
+                    defineDatatype name ty datacons $ go decls
+                Just (_, _) -> throwError $ "Redefined: " ++ name
         go (Declare name ty:decls) = do
             table <- ask
-            case run (check [] ty WUniverse) table of
-                Left e -> throwError e
-                Right () -> case run (whnf [] [] ty handler) table of
-                    Left e -> throwError e
-                    Right ty -> local (insert name (ty, Nothing)) $ go decls
+            liftEither $ run (check [] ty WUniverse) table
+            ty <- liftEither $ run (whnf [] [] ty handler) table
+            local (insert name (ty, Undef)) $ go decls
         go (Define name def:decls) = do
             table <- ask
             case table !? name of
                 Nothing -> throwError $ "Not found: " ++ name
-                Just (_, Just _) -> throwError $ "Redefined: " ++ name
-                Just (ty, Nothing) -> case run (check [] def ty) table of
-                    Left e -> throwError e
-                    Right () ->
-                        local (insert name (ty, Just def)) $ go decls
+                Just (ty, Undef) -> do
+                    liftEither $ run (check [] def ty) table
+                    local (insert name (ty, Term def)) $ go decls
+                Just (_, _) -> throwError $ "Redefined: " ++ name
 
 get [] n = throwError $ "Out of bounds: " ++ show n
 get (x:_) 0 = pure x
@@ -83,6 +87,41 @@ control f = Eval $ shiftT (eval . f)
 
 handler _ = Nothing
 
+defineDatatype
+    :: (MonadError String m, MonadReader Table m)
+    => String -> Whnf -> [(String, Term)] -> m a -> m a
+defineDatatype typename ty datacons m =
+        local (insert typename (ty, Head $ TypeCon typename)) $ go datacons
+    where
+        go [] = m
+        go ((name, ty):datacons) = do
+            table <- ask
+            case table !? name of
+                Just _ -> throwError $ "Redefined: " ++ name
+                Nothing -> do
+                    liftEither $ run (check [] ty WUniverse) table
+                    validateDataconType typename ty
+                    ty <- liftEither $ run (prompt $ whnf [] [] ty handler) table
+                    local (insert name (ty, Head $ DataCon name)) $ go datacons
+
+validateDataconType
+    :: (MonadError String m, MonadReader Table m)
+    => String -> Term -> m ()
+validateDataconType name (Def name')
+    | name == name' = pure ()
+    | otherwise =
+        throwError $ "Invalid constructor type: " ++ name' ++ " not " ++ name
+validateDataconType name (App f _) = go f
+    where
+        go (Def name')
+            | name == name' = pure ()
+            | otherwise =
+                throwError $ "Invalid constructor type: " ++ name' ++ " not " ++ name
+        go (App f _) = go f
+validateDataconType name (Pi _ next) = validateDataconType name next
+validateDataconType name term =
+    throwError $ "Invalid constructor type: " ++ show term ++ " for " ++ name
+
 -- | Evaluate to WHNF.
 whnf :: Env -> Conts -> Term -> Handler -> Eval Whnf Whnf
 whnf rho kappa (App t u) h = do
@@ -99,8 +138,9 @@ whnf _ kappa (Cont k) _ = pure $ WCont (kappa !! k)
 whnf rho kappa (Def global) h = do
     (table, _) <- ask
     case table !? global of
-        Just (_, Just def) -> whnf rho kappa def h
-        Just (_, Nothing) -> throwError $ "Undefined global " ++ global
+        Just (_, Head hd) -> pure $ WNeu hd []
+        Just (_, Term def) -> whnf rho kappa def h
+        Just (_, Undef) -> throwError $ "Undefined global " ++ global
         Nothing -> throwError $ "Unbound global " ++ global
 whnf rho kappa (Lam a t) h =
     pure $ WLam (fmap (Clos rho kappa h) a) (Abs rho t)
@@ -121,7 +161,7 @@ whnf rho _ (Var v) _ = do
     r <- get rho v
     case r of
         Val val -> whnfVal val
-        Free v -> pure $ WNeu v []
+        Free v -> pure $ WNeu (FreeVar v) []
 
 whnfVal :: Val -> Eval Whnf Whnf
 whnfVal (Clos rho kappa h t) = whnf rho kappa t h

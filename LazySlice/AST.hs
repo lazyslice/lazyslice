@@ -14,7 +14,8 @@ data Expr
     deriving Show
 
 data Decl
-    = Declare String Expr
+    = Data String [(String, Expr)]
+    | Declare String Expr
     | Define String Expr
     deriving Show
 
