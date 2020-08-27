@@ -50,5 +50,5 @@
 
 (: func (forall (m (Maybe Bool)) (Maybe Bool)))
 (defun func
-    (((nothing)) nothing)
-    (((just x)) (just x)))
+    (((nothing _)) (nothing Bool))
+    (((just _ x)) (just Bool x)))

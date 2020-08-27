@@ -8,7 +8,9 @@ import Control.Monad.Trans (lift)
 import Control.Monad.Trans.Cont (ContT, runContT, resetT, shiftT)
 import Control.Monad.Trans.Except (ExceptT, runExcept)
 import Control.Monad.Trans.Reader (Reader, runReader, runReaderT)
-import Data.Map (Map, empty, (!?), insert)
+import Data.Map (Map, empty, (!?), insert, union, fromList)
+
+import Debug.Trace (trace)
 
 typecheck :: Module -> Either String ()
 typecheck modl = runExcept $ runReaderT (checkModule modl) $ Table empty empty empty
@@ -41,15 +43,18 @@ checkModule (Module decls) = go decls
                 Just (_, _) -> throwError $ "Redefined: " ++ name
         go (Declare name ty:decls) = do
             table <- ask
-            liftEither $ run (check [] ty WUniverse) table
-            ty <- liftEither $ run (whnf empty [] [] ty handler) table
+            liftEither
+                $ run (check empty [] ty WUniverse) table
+            ty <-
+                liftEither $ run (whnf empty [] [] ty handler) table
             local (define name ty Undef) $ go decls
         go (Define name def:decls) = do
             table <- ask
             case getDef table name of
                 Nothing -> throwError $ "Not found: " ++ name
                 Just (ty, Undef) -> do
-                    liftEither $ run (check [] def ty) table
+                    liftEither
+                        $ run (check empty [] def ty) table
                     local (define name ty (Term def)) $ go decls
                 Just (_, _) -> throwError $ "Redefined: " ++ name
         go (Defun name clauses:decls) = do
@@ -57,18 +62,22 @@ checkModule (Module decls) = go decls
             case getDef table name of
                 Nothing -> throwError $ "Not found: " ++ name
                 Just (ty, Undef) -> do
+                    elabPats (PV 0) empty (fmap toClause clauses) ty
                     go decls
                 Just (_, _) -> throwError $ "Redefined: " ++ name
+
+toClause (pats, term) = C empty [] pats term
 
 get [] n = throwError $ "Out of bounds: " ++ show n
 get (x:_) 0 = pure x
 get (_:xs) n = get xs (n - 1)
 
 newtype Eval r a = Eval
-    { eval :: ContT (Either String r) (Reader (Table, Int)) (Either String a) }
+    { eval :: ContT (Either String r) (Reader EvalState) (Either String a) }
 
 run :: Eval a a -> Table -> Either String a
-run (Eval e) table = runReader (runContT e pure) (table, 0)
+run (Eval e) table =
+    runReader (runContT e pure) $ EvalState table 0
 
 instance Functor (Eval r) where
     fmap f (Eval e) = Eval $ fmap (fmap f) e
@@ -83,7 +92,7 @@ instance Monad (Eval r) where
             go (Left e) = pure $ Left e
             go (Right a) = eval $ f a
 
-instance MonadReader (Table, Int) (Eval r) where
+instance MonadReader EvalState (Eval r) where
     ask = Eval $ fmap Right ask
     local f (Eval e) = Eval $ local f e
 
@@ -97,8 +106,8 @@ instance MonadError [Char] (Eval r) where
 
 inScope :: (Int -> Eval r a) -> Eval r a
 inScope f =
-    local (\(table, idx) -> (table, idx + 1))
-        (ask >>= \(_, idx) -> f idx)
+    local (\s -> s { index = index s + 1 })
+        (ask >>= \s -> f $ index s)
 
 prompt :: Eval Whnf Whnf -> Eval r Whnf
 prompt (Eval m) = Eval $ resetT m
@@ -126,7 +135,7 @@ defineDatatype typename ty datacons m =
             case getDef table name of
                 Just _ -> throwError $ "Redefined: " ++ name
                 Nothing -> do
-                    liftEither $ run (check [] ty WUniverse) table
+                    liftEither $ run (check empty [] ty WUniverse) table
                     ty <- liftEither $ run (prompt $ whnf empty [] [] ty handler) table
                     datacon@(tele, _, tyargs) <- getTele typename ty
                     local (defineDataCon name ty datacon)
@@ -139,7 +148,8 @@ getTele name = go 0
     where
         go i (WPi a b) = do
                 table <- ask
-                b <- liftEither $ run (prompt $ whnfAbs [] handler b (Free i)) table
+                b <-
+                    liftEither $ run (prompt $ whnfAbs [] handler b (Free i)) table
                 (tele, typecon, typeargs) <- go (i + 1) b
                 pure (a:tele, typecon, typeargs)
         go i (WNeu (TypeCon name') spine)
@@ -163,7 +173,7 @@ whnf menv rho kappa (App t u) h = do
     where v = Clos menv rho kappa h u
 whnf _ _ kappa (Cont k) _ = pure $ WCont (kappa !! k)
 whnf menv rho kappa (Def global) h = do
-    (table, _) <- ask
+    table <- table <$> ask
     case getDef table global of
         Just (_, Head hd) -> pure $ WNeu hd []
         Just (_, Term def) -> whnf menv rho kappa def h
@@ -188,7 +198,7 @@ whnf _ _ _ Unit _ = pure WUnit
 whnf _ _ _ Universe _ = pure WUniverse
 whnf menv _ _ (MatchVar v) _ = case menv !? v of
     Just val -> whnfVal val
-    Nothing -> throwError $ "Match variable not found: " ++ show v
+    Nothing -> pure $ WNeu (MatVar v) []
 whnf _ rho _ (Var v) _ = do
     r <- get rho v
     case r of
@@ -244,71 +254,85 @@ envFromCtx ls = go (length ls) ls
         go n [] = []
         go n (_:xs) = Free (n - 1) : go (n - 1) xs
 
-infer :: [Whnf] -> Term -> Eval r Whnf
-infer gamma (App t u) = do
-    fTy <- infer gamma t
+infer :: PatCtx -> [Whnf] -> Term -> Eval r Whnf
+infer pgamma gamma (App t u) = do
+    fTy <- infer pgamma gamma t
     case fTy of
         WPi a b -> do
             a <- prompt $ whnfVal a
-            check gamma u a
+            check pgamma gamma u a
             prompt $ whnfAbs [] handler b (Val $ Clos empty (envFromCtx gamma) [] handler u)
         _ -> throwError "Not a pi type"
-infer _ (Def global) = do
-    (table, _) <- ask
+infer _ _ (Def global) = do
+    table <- table <$> ask
     case getDef table global of
         Nothing -> throwError $ "Unbound global " ++ global
         Just (ty, _) -> pure ty
-infer gamma (Lam (Just t) u) = do
-    check gamma t WUniverse
+infer pgamma gamma (Lam (Just t) u) = do
+    check pgamma gamma t WUniverse
     t <- prompt $ whnf empty (envFromCtx gamma) [] t handler
-    infer (t:gamma) u
-infer _ (Lam Nothing _) =
+    infer pgamma (t:gamma) u
+infer _ _ (Lam Nothing _) =
     throwError "Cannot infer lambda without annotation."
-infer _ (Pair _ _) = throwError "Cannot infer pair."
-infer gamma (Sigma t u) = do
-    check gamma t WUniverse
+infer _ _ (Pair _ _) = throwError "Cannot infer pair."
+infer pgamma gamma (Sigma t u) = do
+    check pgamma gamma t WUniverse
     t <- prompt $ whnf empty (envFromCtx gamma) [] t handler
-    check (t:gamma) u WUniverse
+    check pgamma (t:gamma) u WUniverse
     pure WUniverse
-infer gamma (Pi t u) = do
-    check gamma t WUniverse
+infer pgamma gamma (Pi t u) = do
+    check pgamma gamma t WUniverse
     t <- prompt $ whnf empty (envFromCtx gamma) [] t handler
-    check (t:gamma) u WUniverse
+    check pgamma (t:gamma) u WUniverse
     pure WUniverse
-infer _ Triv = pure WUnit
-infer _ Unit = pure WUniverse
-infer _ Universe = pure WUniverse
-infer gamma (Var n) = get gamma n
+infer _ _ Triv = pure WUnit
+infer _ _ Unit = pure WUniverse
+infer _ _ Universe = pure WUniverse
+infer pgamma _ (MatchVar name) = case pgamma !? name of
+    Nothing -> throwError $ "Not found: " ++ show name
+    Just ty -> pure ty
+infer _ gamma (Var n) = get gamma n
 
-check :: [Whnf] -> Term -> Whnf -> Eval r ()
-check gamma (Lam Nothing t) (WPi a b) = do
+check :: PatCtx -> [Whnf] -> Term -> Whnf -> Eval r ()
+check pgamma gamma (Lam Nothing t) (WPi a b) = do
     a <- prompt $ whnfVal a
     inScope $ \i -> do
         b <- prompt $ whnfAbs [] handler b (Free i)
-        check (a:gamma) t b
-check gamma (Pair t u) (WSigma a b) = do
+        check pgamma (a:gamma) t b
+check pgamma gamma (Pair t u) (WSigma a b) = do
     a <- prompt $ whnfVal a
-    check gamma t a
+    check pgamma gamma t a
     b <- prompt $ whnfAbs [] handler b (Val $ Clos empty (envFromCtx gamma) [] handler t)
-    check (a:gamma) u b
-check gamma term ty = do
-    ty' <- infer gamma term
+    check pgamma (a:gamma) u b
+check pgamma gamma term ty = do
+    ty' <- infer pgamma gamma term
     unifyWhnf ty ty'
 
 -- TODO: Implement dependent pattern matching
 
 type PatConstraint = [(PatternVar, Whnf, Pattern)]
-data Clause = C PatternVar PatConstraint [Pattern] Term
-data Refutability = Refut PatternVar Whnf | Irrefut [(MatchVar, PatternVar)]
+type PatCtx = Map MatchVar Whnf
+data Clause = C PatCtx PatConstraint [Pattern] Term
+data Refutability
+    = Refut PatternVar Whnf
+    | Irrefut [(MatchVar, PatternVar, Whnf)]
 
 elabPats
     :: (MonadError String m, MonadReader Table m)
-    => [Clause] -> Whnf -> m CaseTree
-elabPats [] _ = throwError "Incomplete pattern match"
-elabPats (clauses@(C _ e [] term:_)) ty = case refut e of
-        Irrefut _ -> do
+    => PatternVar
+    -> PatEnv
+    -> [Clause]
+    -> Whnf
+    -> m CaseTree
+elabPats _ _ [] _ = throwError "Incomplete pattern match"
+elabPats varGen subst (clauses@(C pctx e [] term:_)) ty = case refut e of
+        Irrefut vars -> do
+            let pctx' = union pctx
+                    $ fromList
+                    $ fmap (\(mv, pv, ty) -> (mv, ty)) vars
+            trace (show pctx') (pure ())
             table <- ask
-            liftEither $ run (check [] term ty) table
+            liftEither $ run (check pctx' [] term ty) table
             pure $ Leaf term
         Refut v ty -> do
             datacons <- case ty of
@@ -322,71 +346,79 @@ elabPats (clauses@(C _ e [] term:_)) ty = case refut e of
             cases <- split datacons v clauses
             pure $ Split v cases
     where
-        -- Find a constraint in the form (x / c v...)
+        -- Find a constraint in the form (x / c v...).
         refut :: PatConstraint -> Refutability
         refut [] = Irrefut []
         refut ((v, ty, ConPat _ _):e) = Refut v ty
-        refut ((v, _, VarPat v'):e) = case refut e of
-            Irrefut ls -> Irrefut ((v', v):ls)
+        refut ((v, ty, VarPat v'):e) = case refut e of
+            Irrefut ls -> Irrefut ((v', v, ty):ls)
             Refut v ty -> Refut v ty
 
         -- Split var on a datatype.
         split [] var clauses = pure []
         split ((name, innerTys, _):datacons) var clauses = do
-            clauses <- refine name innerTys var clauses
-            branch <- elabPats clauses ty
+            (varGen, vts) <- fresh varGen innerTys
+            let vs = fmap (\(v, _) -> Whnf $ WNeu (PatVar v) []) vts
+            clauses' <- refine name var vts innerTys clauses
+            let subst' =
+                    insert var
+                        (WNeu (DataCon name) vs) subst
+            branch <- elabPats varGen subst' clauses' ty
             xs <- split datacons var clauses
             pure $ (name, undefined, branch):xs
 
-        -- Remove impossible constraints from the clauses.
-        refine name innerTys var [] = pure []
-        refine name innerTys var (C varGen e pats rhs:clauses) = do
-            maybe <- filt varGen [] name innerTys var e
-            next <- refine name innerTys var clauses
+        -- Remove clauses with impossible constraints.
+        refine name var vts innerTys [] = pure []
+        refine name var vts innerTys (C pctx e pats rhs:clauses) = do
+            maybe <- filt [] name var vts innerTys e
+            next <- refine name var vts innerTys clauses
             case maybe of
                 Nothing -> pure next
-                Just (varGen, vars, e) ->
-                    pure $ C varGen e pats rhs : next
+                Just (Nothing, e) ->
+                    pure $ C pctx e pats rhs : next
+                Just (Just (v, ty), e) ->
+                    pure $ C (insert v ty pctx) e pats rhs : next
 
         -- Remove constraints that fail the refinement.
-        filt varGen acc name innerTys var [] = pure Nothing
-        filt varGen acc name innerTys var ((c@(var', _, pat)):e)
+        filt acc name var vts innerTys [] = pure Nothing
+        filt acc name var vts innerTys ((c@(var', ty, pat)):e)
             | var == var' = case pat of
                 ConPat name' pats
                     | name == name' -> do
-                        (varGen', e') <- fresh varGen innerTys pats
-                        pure
-                            $ Just
-                            $ ( varGen'
-                              , Just $ fmap (\(v, _, _) -> v) e'
-                              , acc ++ e' ++ e )
+                        e' <- tie vts pats
+                        pure $ Just (Nothing, acc ++ e' ++ e)
                     | otherwise -> pure Nothing
-                VarPat s ->
-                    pure $ Just (varGen, Nothing, acc ++ c:e)
-            | otherwise =
-                filt varGen (c:acc) name innerTys var e
+                VarPat s -> pure $ Just (Just (s, ty), acc ++ c:e)
+            | otherwise = filt (c:acc) name var vts innerTys e
 
-        fresh varGen [] [] = pure (varGen, [])
-        fresh _ [] (_:_) = throwError "Too many patterns!"
-        fresh _ (_:_) [] = throwError "Not enough patterns!"
-        fresh varGen (ty:tys) (pat:pats) = do
+        -- Generate fresh pattern variables and pair them
+        -- with their types.
+        fresh varGen [] = pure (varGen, [])
+        fresh varGen (ty:tys) = do
             table <- ask
             ty <- liftEither $ run (prompt $ whnfVal ty) table
-            (varGen', e) <- fresh (nextPV varGen) tys pats
-            pure (varGen', (varGen, ty, pat):e)
-elabPats clauses@(C varGen _ _ _:_) (WPi a b) = do
+            (varGen', vs) <- fresh (nextPV varGen) tys
+            pure (varGen', (varGen, ty):vs)
+
+        tie [] [] = pure []
+        tie [] (_:_) = throwError "Not enough patterns!"
+        tie (_:_) [] = throwError "Too many patterns!"
+        tie ((v, ty):vts) (pat:pats) = do
+            rest <- tie vts pats
+            pure $ (v, ty, pat):rest
+
+elabPats varGen subst clauses (WPi a b) = do
         table <- ask
         a <- liftEither $ run (prompt $ whnfVal a) table
         b <- liftEither
             $ run (prompt $ whnfAbs [] handler b $ Pat varGen) table
         clauses <- liftEither $ intro a clauses
-        Intro varGen <$> elabPats clauses b
+        Intro varGen <$> elabPats (nextPV varGen) subst clauses b
     where
         intro :: Whnf -> [Clause] -> Either String [Clause]
         intro _ [] = Right []
-        intro a (C varGen e (pat:pats) rhs:clauses) = do
+        intro a (C pctx e (pat:pats) rhs:clauses) = do
             rest <- intro a clauses
-            Right
-                $ C (nextPV varGen) ((varGen, a, pat):e) pats rhs : rest
+            Right $ C pctx ((varGen, a, pat):e) pats rhs : rest
         intro _ (C _ _ [] _ : _) = Left "Missing patterns"
-elabPats _ _ = throwError "Nothing to do?"
+elabPats _ _ _ _ = throwError "Nothing to do?"

@@ -7,7 +7,6 @@ import Control.Monad.Except (MonadError, throwError, liftEither)
 import Control.Monad.Reader (MonadReader, ask, local)
 import Control.Monad.Trans.Reader (runReaderT)
 import Control.Monad.Trans.Except (runExcept)
-import Data.List (foldl')
 import Data.Map (Map, (!?), empty, insert, union)
 
 data Name = Local Int | Global String | PatV Syn.MatchVar
@@ -131,16 +130,18 @@ resolvePattern (AST.VarPat name) k = do
     (mv, tbl) <- ask
     case tbl !? name of
         Nothing ->
-            local (\(mv, tbl) -> (Syn.nextMV mv, insert name mv tbl))
+            local (\(mv, tbl) ->
+                (Syn.nextMV mv, insert name mv tbl))
                 $ k $ Syn.VarPat mv
         Just _ -> throwError $ "Redefined: " ++ name
 resolvePattern (AST.ConPat name pats) k =
-    resolvePatterns pats $ \pats -> k $ Syn.ConPat name pats
+    resolvePatterns pats (k . Syn.ConPat name)
 
 resolvePatterns
     :: (MonadError String m, MonadReader (MatchVar, Map String MatchVar) m)
     => [AST.Pattern] -> ([Syn.Pattern] -> m a) -> m a
 resolvePatterns pats k =
     -- Accumulator is a function because of CPS
-    foldl' (\k pat pats -> resolvePattern pat $ \pat -> k $ pat:pats)
-        (\pats -> k pats) pats []
+    foldr (\pat k pats ->
+        resolvePattern pat $ \pat -> k $ pat:pats)
+        (k . reverse) pats []

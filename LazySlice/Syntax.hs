@@ -71,12 +71,17 @@ data Table = Table
     , datatypes :: Map String [(String, [Val], [Val])]
     , defs :: Map String (Whnf, Def) }
 
-type ContTy = (Reader (Table, Int)) (Either String Whnf)
+data EvalState = EvalState
+    { table :: Table
+    , index :: Int }
+
+type ContTy = (Reader EvalState) (Either String Whnf)
 
 data Head
     = DataCon String
     | FreeVar Int
     | PatVar PatternVar
+    | MatVar MatchVar
     | TypeCon String
     | Fun String CaseTree
 
@@ -84,13 +89,16 @@ instance Eq Head where
     DataCon s1 == DataCon s2 = s1 == s2
     FreeVar i1 == FreeVar i2 = i1 == i2
     PatVar v1 == PatVar v2 = v1 == v2
+    MatVar v1 == MatVar v2 = v1 == v2
     TypeCon s1 == TypeCon s2 = s1 == s2
     Fun s1 _ == Fun s2 _ = s1 == s2
+    _ == _ = False
 
 instance Show Head where
     show (DataCon s) = s
     show (FreeVar i) = show i
     show (PatVar v) = show v
+    show (MatVar v) = show v
     show (TypeCon s) = s
     show (Fun s _) = s
 
@@ -140,6 +148,11 @@ type Handler = String -> Maybe Term
 -- | A match environment maps match variables to terms and is essentially the
 --   "solution" to a pattern match.
 type MatchEnv = Map MatchVar Val
+
+-- | A pattern environment maps pattern variables to terms and is
+--   used when refining the types of dependent pattern match
+--   clauses.
+type PatEnv = Map PatternVar Whnf
 
 data Val = Clos MatchEnv Env Conts Handler Term | Whnf Whnf
 
