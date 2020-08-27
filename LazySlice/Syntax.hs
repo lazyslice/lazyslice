@@ -67,8 +67,8 @@ data Def
     | Undef
 
 data Table = Table
-    { datacons :: Map String ([Val], String, [Val]) -- ^ (Telescope, Typecon, Type arguments)
-    , datatypes :: Map String [(String, [Val], [Val])]
+    { datacons :: Map String (String, Whnf) -- ^ (Telescope, Typecon, Type arguments)
+    , datatypes :: Map String [(String, Whnf)]
     , defs :: Map String (Whnf, Def) }
 
 data EvalState = EvalState
@@ -96,7 +96,7 @@ instance Eq Head where
 
 instance Show Head where
     show (DataCon s) = s
-    show (FreeVar i) = show i
+    show (FreeVar i) = "fv" ++ show i
     show (PatVar v) = show v
     show (MatVar v) = show v
     show (TypeCon s) = s

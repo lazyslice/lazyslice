@@ -48,7 +48,17 @@
     (: fzero (forall (n Nat) (Fin (suc n))))
     (: fsuc (forall (n Nat) (prev (Fin n)) (Fin (suc n)))))
 
+(: not (forall (b Bool) Bool))
+(defun not
+    (((false)) true)
+    (((true)) false))
+
+(: add (forall (m Nat) (n Nat) Nat))
+(defun add
+    (((zero) n) n)
+    (((suc m) n) (suc (add m n))))
+
 (: func (forall (m (Maybe Bool)) (Maybe Bool)))
 (defun func
-    (((nothing _)) (nothing Bool))
-    (((just _ x)) (just Bool x)))
+    (((nothing A)) (nothing Bool))
+    (((just A x)) (just Bool x)))
