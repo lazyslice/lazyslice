@@ -15,17 +15,33 @@ data Decl
     = Data String [(String, Term)]
     | Declare String Term
     | Define String Term
+    | Defun String [([Pattern], Term)]
     deriving Show
 
 data Pattern
     = ConPat String [Pattern]
-    | VarPat Int
+    | VarPat MatchVar
+    deriving Show
+
+-- | A match variable is a concrete variable used when pattern matching, and
+--   always maps to a term.
+newtype MatchVar = MV Int
+    deriving (Eq, Ord, Show)
+
+nextMV (MV i) = MV (i + 1)
+
+-- | A pattern variable is a symbolic term used when typechecking dependent
+--   pattern matching.
+newtype PatternVar = PV Int
+    deriving (Eq, Ord, Show)
+
+nextPV (PV i) = PV (i + 1)
 
 -- | https://jesper.sikanda.be/files/elaborating-dependent-copattern-matching.pdf
 data CaseTree
     = Leaf Term
-    | Intro Int CaseTree -- ^ Introduce next parameter
-    | Split Int [(String, Maybe [Int], CaseTree)]
+    | Intro PatternVar CaseTree -- ^ Introduce next parameter
+    | Split PatternVar [(String, Maybe [Int], CaseTree)]
     -- var, ^ (C, var1..varN, rhs)
 
 data Term
@@ -41,10 +57,14 @@ data Term
     | Try Term
     | Unit
     | Universe
+    | MatchVar MatchVar
     | Var Int -- ^ A variable is a De Bruijn index (which counts from the inside-out).
     deriving Show
 
-data Def = Term Term | Head Head | Undef
+data Def
+    = Term Term
+    | Head Head
+    | Undef
 
 data Table = Table
     { datacons :: Map String ([Val], String, [Val]) -- ^ (Telescope, Typecon, Type arguments)
@@ -56,8 +76,23 @@ type ContTy = (Reader (Table, Int)) (Either String Whnf)
 data Head
     = DataCon String
     | FreeVar Int
+    | PatVar PatternVar
     | TypeCon String
-    deriving (Eq, Show)
+    | Fun String CaseTree
+
+instance Eq Head where
+    DataCon s1 == DataCon s2 = s1 == s2
+    FreeVar i1 == FreeVar i2 = i1 == i2
+    PatVar v1 == PatVar v2 = v1 == v2
+    TypeCon s1 == TypeCon s2 = s1 == s2
+    Fun s1 _ == Fun s2 _ = s1 == s2
+
+instance Show Head where
+    show (DataCon s) = s
+    show (FreeVar i) = show i
+    show (PatVar v) = show v
+    show (TypeCon s) = s
+    show (Fun s _) = s
 
 -- | Weak head normal forms.
 data Whnf
@@ -96,19 +131,24 @@ type Conts = [Either String Whnf -> ContTy]
 data Binding
     = Val Val
     | Free Int -- ^ A free variable is not a De Bruijn index, and it counts from the outside in.
+    | Pat PatternVar
     deriving Show
 
 -- | A handler catches an effect.
 type Handler = String -> Maybe Term
 
-data Val = Clos Env Conts Handler Term
+-- | A match environment maps match variables to terms and is essentially the
+--   "solution" to a pattern match.
+type MatchEnv = Map MatchVar Val
+
+data Val = Clos MatchEnv Env Conts Handler Term | Whnf Whnf
 
 instance Show Val where
-    show (Clos env _ _ term) =
+    show (Clos _ env _ _ term) =
         "(clos " ++ show env ++ " " ++ show term ++ ")"
 
-data Abs = Abs Env Term
+data Abs = Abs MatchEnv Env Term
 
 instance Show Abs where
-    show (Abs env term) =
+    show (Abs _ env term) =
         "(abstr " ++ show env ++ " " ++ show term ++ ")"

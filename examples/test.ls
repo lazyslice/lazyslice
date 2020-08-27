@@ -47,3 +47,8 @@
 (data Fin
     (: fzero (forall (n Nat) (Fin (suc n))))
     (: fsuc (forall (n Nat) (prev (Fin n)) (Fin (suc n)))))
+
+(: func (forall (m (Maybe Bool)) (Maybe Bool)))
+(defun func
+    (((nothing)) nothing)
+    (((just x)) (just x)))

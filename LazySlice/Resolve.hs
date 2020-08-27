@@ -3,13 +3,14 @@ module LazySlice.Resolve where
 
 import LazySlice.AST as AST
 import LazySlice.Syntax as Syn
-import Control.Monad.Except (MonadError, throwError)
+import Control.Monad.Except (MonadError, throwError, liftEither)
 import Control.Monad.Reader (MonadReader, ask, local)
 import Control.Monad.Trans.Reader (runReaderT)
 import Control.Monad.Trans.Except (runExcept)
-import Data.Map (Map, (!?), empty, insert, traverseWithKey)
+import Data.List (foldl')
+import Data.Map (Map, (!?), empty, insert, union)
 
-data Name = Local Int | Global String
+data Name = Local Int | Global String | PatV Syn.MatchVar
 
 data Symtable = Symtable
     { vars :: Map String Name }
@@ -37,6 +38,10 @@ resolveModule (AST.Module decls) = do
             expr <- resolveExpr expr
             rest <- go decls
             pure $ Syn.Define name expr:rest
+        go (AST.Defun name clauses:decls) = do
+            clauses <- resolveFun clauses
+            rest <- go decls
+            pure $ Syn.Defun name clauses:rest
 
 global :: (MonadReader Symtable m) => String -> m a -> m a
 global name =
@@ -58,6 +63,34 @@ resolveDatatype [] k = k []
 resolveDatatype ((name, expr):xs) k = do
     expr <- resolveExpr expr
     global name $ resolveDatatype xs $ \rest -> k $ (name, expr):rest
+
+resolveFun
+    :: (MonadError String m, MonadReader Symtable m)
+    => [([AST.Pattern], AST.Expr)]
+    -> m [([Syn.Pattern], Syn.Term)]
+resolveFun = mapM (uncurry resolveClause)
+
+resolveClause
+    :: (MonadError String m, MonadReader Symtable m)
+    => [AST.Pattern] -> AST.Expr -> m ([Syn.Pattern], Syn.Term)
+resolveClause lhs rhs = do
+        (lhs, tbl) <- liftEither $ resolveLHS lhs
+        rhs <- local (modify tbl) $ resolveExpr rhs
+        pure (lhs, rhs)
+    where
+        modify mvs symtable =
+            let mvs' = fmap PatV mvs in
+            symtable
+                { vars = union mvs' $ vars symtable }
+
+resolveLHS
+    :: [AST.Pattern]
+    -> Either String ([Syn.Pattern], Map String MatchVar)
+resolveLHS pats =
+    runExcept
+        (runReaderT (resolvePatterns pats $ \pats -> do
+            (_, tbl) <- ask
+            pure (pats, tbl)) (Syn.MV 0, empty))
 
 resolveExpr
     :: (MonadError String m, MonadReader Symtable m)
@@ -88,4 +121,26 @@ resolveExpr (AST.Var name) = do
     case vars symtable !? name of
         Just (Local v) -> pure $ Syn.Var v
         Just (Global v) -> pure $ Syn.Def v
+        Just (PatV v) -> pure $ Syn.MatchVar v
         Nothing -> throwError $ "Unbound variable " ++ name
+
+resolvePattern
+    :: (MonadError String m, MonadReader (MatchVar, Map String MatchVar) m)
+    => AST.Pattern -> (Syn.Pattern -> m a) -> m a
+resolvePattern (AST.VarPat name) k = do
+    (mv, tbl) <- ask
+    case tbl !? name of
+        Nothing ->
+            local (\(mv, tbl) -> (Syn.nextMV mv, insert name mv tbl))
+                $ k $ Syn.VarPat mv
+        Just _ -> throwError $ "Redefined: " ++ name
+resolvePattern (AST.ConPat name pats) k =
+    resolvePatterns pats $ \pats -> k $ Syn.ConPat name pats
+
+resolvePatterns
+    :: (MonadError String m, MonadReader (MatchVar, Map String MatchVar) m)
+    => [AST.Pattern] -> ([Syn.Pattern] -> m a) -> m a
+resolvePatterns pats k =
+    -- Accumulator is a function because of CPS
+    foldl' (\k pat pats -> resolvePattern pat $ \pat -> k $ pat:pats)
+        (\pats -> k pats) pats []
