@@ -17,6 +17,17 @@ data Decl
     | Define String Term
     deriving Show
 
+data Pattern
+    = ConPat String [Pattern]
+    | VarPat Int
+
+-- | https://jesper.sikanda.be/files/elaborating-dependent-copattern-matching.pdf
+data CaseTree
+    = Leaf Term
+    | Intro Int CaseTree -- ^ Introduce next parameter
+    | Split Int [(String, Maybe [Int], CaseTree)]
+    -- var, ^ (C, var1..varN, rhs)
+
 data Term
     = App Term Term
     | Cont Int -- ^ Continuations use a separate De Bruijn index from the variables, counted inside-out by the effect handlers.
@@ -35,7 +46,10 @@ data Term
 
 data Def = Term Term | Head Head | Undef
 
-type Table = Map String (Whnf, Def)
+data Table = Table
+    { datacons :: Map String ([Val], String, [Val]) -- ^ (Telescope, Typecon, Type arguments)
+    , datatypes :: Map String [(String, [Val], [Val])]
+    , defs :: Map String (Whnf, Def) }
 
 type ContTy = (Reader (Table, Int)) (Either String Whnf)
 

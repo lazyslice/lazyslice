@@ -13,6 +13,10 @@ data Expr
     | Var String
     deriving Show
 
+data Pattern
+    = ConPat String [Pattern]
+    | VarPat String
+
 data Decl
     = Data String [(String, Expr)]
     | Declare String Expr

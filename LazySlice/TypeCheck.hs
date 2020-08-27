@@ -11,7 +11,21 @@ import Control.Monad.Trans.Reader (Reader, runReader, runReaderT)
 import Data.Map (Map, empty, (!?), insert)
 
 typecheck :: Module -> Either String ()
-typecheck modl = runExcept $ runReaderT (checkModule modl) $ empty
+typecheck modl = runExcept $ runReaderT (checkModule modl) $ Table empty empty empty
+
+define :: String -> Whnf -> Def -> Table -> Table
+define name ty def table = table { defs = insert name (ty, def) $ defs table }
+
+defineDataCon :: String -> Whnf -> ([Val], String, [Val]) -> Table -> Table
+defineDataCon name ty datacon table =
+    let table' = table { datacons = insert name datacon $ datacons table } in
+    define name ty (Head $ DataCon name) table'
+
+getDef :: Table -> String -> Maybe (Whnf, Def)
+getDef table name = defs table !? name
+
+getDatatype :: Table -> String -> Maybe [(String, [Val], [Val])]
+getDatatype table name = datatypes table !? name
 
 checkModule :: (MonadError String m, MonadReader Table m) => Module -> m ()
 checkModule (Module decls) = go decls
@@ -20,7 +34,7 @@ checkModule (Module decls) = go decls
         go [] = pure ()
         go (Data name datacons:decls) = do
             table <- ask
-            case table !? name of
+            case getDef table name of
                 Nothing -> throwError $ "Not found: " ++ name
                 Just (ty, Undef) ->
                     defineDatatype name ty datacons $ go decls
@@ -29,14 +43,14 @@ checkModule (Module decls) = go decls
             table <- ask
             liftEither $ run (check [] ty WUniverse) table
             ty <- liftEither $ run (whnf [] [] ty handler) table
-            local (insert name (ty, Undef)) $ go decls
+            local (define name ty Undef) $ go decls
         go (Define name def:decls) = do
             table <- ask
-            case table !? name of
+            case getDef table name of
                 Nothing -> throwError $ "Not found: " ++ name
                 Just (ty, Undef) -> do
                     liftEither $ run (check [] def ty) table
-                    local (insert name (ty, Term def)) $ go decls
+                    local (define name ty (Term def)) $ go decls
                 Just (_, _) -> throwError $ "Redefined: " ++ name
 
 get [] n = throwError $ "Out of bounds: " ++ show n
@@ -91,36 +105,42 @@ defineDatatype
     :: (MonadError String m, MonadReader Table m)
     => String -> Whnf -> [(String, Term)] -> m a -> m a
 defineDatatype typename ty datacons m =
-        local (insert typename (ty, Head $ TypeCon typename)) $ go datacons
+        local (define typename ty (Head $ TypeCon typename))
+            $ go [] datacons
     where
-        go [] = m
-        go ((name, ty):datacons) = do
+        go acc [] =
+            local (\table ->
+                    table
+                        { datatypes =
+                            insert typename (reverse acc) $ datatypes table }
+                ) m
+        go acc ((name, ty):datacons) = do
             table <- ask
-            case table !? name of
+            case getDef table name of
                 Just _ -> throwError $ "Redefined: " ++ name
                 Nothing -> do
                     liftEither $ run (check [] ty WUniverse) table
-                    validateDataconType typename ty
                     ty <- liftEither $ run (prompt $ whnf [] [] ty handler) table
-                    local (insert name (ty, Head $ DataCon name)) $ go datacons
+                    datacon@(tele, _, tyargs) <- getTele typename ty
+                    local (defineDataCon name ty datacon)
+                        $ go ((name, tele, tyargs):acc) datacons
 
-validateDataconType
+getTele
     :: (MonadError String m, MonadReader Table m)
-    => String -> Term -> m ()
-validateDataconType name (Def name')
-    | name == name' = pure ()
-    | otherwise =
-        throwError $ "Invalid constructor type: " ++ name' ++ " not " ++ name
-validateDataconType name (App f _) = go f
+    => String -> Whnf -> m ([Val], String, [Val])
+getTele name = go 0
     where
-        go (Def name')
-            | name == name' = pure ()
+        go i (WPi a b) = do
+                table <- ask
+                b <- liftEither $ run (prompt $ whnfAbs [] handler b (Free i)) table
+                (tele, typecon, typeargs) <- go (i + 1) b
+                pure (a:tele, typecon, typeargs)
+        go i (WNeu (TypeCon name') spine)
+            | name' == name = pure ([], name, spine)
             | otherwise =
                 throwError $ "Invalid constructor type: " ++ name' ++ " not " ++ name
-        go (App f _) = go f
-validateDataconType name (Pi _ next) = validateDataconType name next
-validateDataconType name term =
-    throwError $ "Invalid constructor type: " ++ show term ++ " for " ++ name
+        go i ty =
+            throwError $ "Invalid constructor type: " ++ show ty
 
 -- | Evaluate to WHNF.
 whnf :: Env -> Conts -> Term -> Handler -> Eval Whnf Whnf
@@ -137,7 +157,7 @@ whnf rho kappa (App t u) h = do
 whnf _ kappa (Cont k) _ = pure $ WCont (kappa !! k)
 whnf rho kappa (Def global) h = do
     (table, _) <- ask
-    case table !? global of
+    case getDef table global of
         Just (_, Head hd) -> pure $ WNeu hd []
         Just (_, Term def) -> whnf rho kappa def h
         Just (_, Undef) -> throwError $ "Undefined global " ++ global
@@ -221,7 +241,7 @@ infer gamma (App t u) = do
         _ -> throwError "Not a pi type"
 infer _ (Def global) = do
     (table, _) <- ask
-    case table !? global of
+    case getDef table global of
         Nothing -> throwError $ "Unbound global " ++ global
         Just (ty, _) -> pure ty
 infer gamma (Lam (Just t) u) = do
@@ -260,3 +280,91 @@ check gamma (Pair t u) (WSigma a b) = do
 check gamma term ty = do
     ty' <- infer gamma term
     unifyWhnf ty ty'
+
+-- TODO: Implement dependent pattern matching
+
+type PatConstraint = [(Int, Whnf, Pattern)]
+data Clause = C Int PatConstraint [Pattern] Term
+
+elabPats :: [Clause] -> Whnf -> Eval r CaseTree
+elabPats [] _ = throwError "Incomplete pattern match"
+elabPats (clauses@(C _ e [] term:_)) ty = case findRefut e of
+        Nothing -> do
+            check [] term ty
+            pure $ Leaf term
+        Just (v, ty) -> do
+            datacons <- case ty of
+                WNeu (TypeCon name) spine -> do
+                    (table, _) <- ask
+                    case datatypes table !? name of
+                        Nothing ->
+                            throwError $ "Undefined: " ++ name
+                        Just datacons -> pure datacons
+                ty -> throwError $ "Not a datatype: " ++ show ty
+            cases <- split datacons v clauses
+            pure $ Split v cases
+    where
+        -- Find a constraint in the form (x / c v...) and
+        -- return the variable x and its type
+        findRefut :: PatConstraint -> Maybe (Int, Whnf)
+        findRefut [] = Nothing
+        findRefut ((v, ty, ConPat _ _):e) = Just (v, ty)
+        findRefut ((_, _, VarPat _):e) = findRefut e
+
+        -- Split var on a datatype.
+        split [] var clauses = pure []
+        split ((name, innerTys, _):datacons) var clauses = do
+            clauses <- refine name innerTys var clauses
+            branch <- elabPats clauses ty
+            xs <- split datacons var clauses
+            pure $ (name, undefined, branch):xs
+
+        -- Remove impossible constraints from the clauses.
+        refine name innerTys var [] = pure []
+        refine name innerTys var (C varGen e pats rhs:clauses) = do
+            maybe <- filterE varGen [] name innerTys var e
+            next <- refine name innerTys var clauses
+            case maybe of
+                Nothing -> pure next
+                Just (varGen, vars, e) ->
+                    pure $ C varGen e pats rhs : next
+
+        -- Remove constraints that fail the refinement.
+        filterE varGen acc name innerTys var [] = pure Nothing
+        filterE varGen acc name innerTys var ((c@(var', _, pat)):e)
+            | var == var' = case pat of
+                ConPat name' pats
+                    | name == name' -> do
+                        (varGen', e') <- fresh varGen innerTys pats
+                        pure
+                            $ Just
+                            $ ( varGen'
+                              , Just $ fmap (\(v, _, _) -> v) e'
+                              , acc ++ e' ++ e )
+                    | otherwise -> pure Nothing
+                VarPat s ->
+                    pure $ Just (varGen, Nothing, acc ++ c:e)
+            | otherwise =
+                filterE varGen (c:acc) name innerTys var e
+
+        fresh varGen [] [] = pure (varGen, [])
+        fresh varGen (ty:tys) (pat:pats) = do
+            ty <- prompt $ whnfVal ty
+            (varGen', e) <- fresh (varGen + 1) tys pats
+            pure (varGen', (varGen, ty, pat):e)
+elabPats (C varGen e (pat:pats) rhs:clauses) (WPi a b) = do
+        a <- prompt $ whnfVal a
+        b <- prompt $ whnfAbs [] handler b (Free varGen)
+        clauses <- liftEither $ intro a clauses
+        Intro varGen
+            <$> elabPats
+                (C (varGen + 1) e (pat:pats) rhs : clauses) b
+    where
+        intro :: Whnf -> [Clause] -> Either String [Clause]
+        intro _ [] = Right []
+        intro a (C varGen e (pat:pats) rhs:clauses) = do
+            rest <- intro a clauses
+            Right
+                $ (C (varGen + 1) ((varGen, a, pat):e) pats rhs):rest
+        intro _ (C _ _ [] _ : _) = Left "Missing patterns"
+elabPats _ _ = throwError "Nothing to do?"

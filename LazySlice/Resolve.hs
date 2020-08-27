@@ -46,8 +46,7 @@ global name =
 intro :: MonadReader Symtable m => String -> m Syn.Term -> m Syn.Term
 intro name = local $ \symtable ->
         let vs = vars symtable in
-        Symtable
-            { vars = insert name (Local 0) $ fmap up vs }
+        symtable { vars = insert name (Local 0) $ fmap up vs }
     where
         up (Local v) = Local $ v + 1
         up other = other

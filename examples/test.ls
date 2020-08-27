@@ -37,3 +37,13 @@
 
 (: test5 (Maybe Bool))
 (define test5 (just Bool true))
+
+(: Nat type)
+(data Nat
+    (: zero Nat)
+    (: suc (forall (prev Nat) Nat)))
+
+(: Fin (forall (n Nat) type))
+(data Fin
+    (: fzero (forall (n Nat) (Fin (suc n))))
+    (: fsuc (forall (n Nat) (prev (Fin n)) (Fin (suc n)))))
