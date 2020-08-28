@@ -60,5 +60,15 @@
 
 (: func (forall (m (Maybe Bool)) (Maybe Bool)))
 (defun func
-    (((nothing A)) (nothing Bool))
-    (((just A x)) (just Bool x)))
+    (((nothing _)) (nothing Bool))
+    (((just _ x)) (just Bool x)))
+
+(: Indexed (forall (b Bool) type))
+(data Indexed
+    (: t (Indexed true))
+    (: f (Indexed false)))
+
+(: index (forall (b Bool) (Indexed b)))
+(defun index
+    (((true)) t)
+    (((false)) f))

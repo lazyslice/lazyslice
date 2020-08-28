@@ -16,6 +16,7 @@ data Expr
 data Pattern
     = ConPat String [Pattern]
     | VarPat String
+    | WildPat
     deriving Show
 
 data Decl

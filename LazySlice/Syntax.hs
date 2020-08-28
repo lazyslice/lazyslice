@@ -21,6 +21,7 @@ data Decl
 data Pattern
     = ConPat String [Pattern]
     | VarPat MatchVar
+    | WildPat
     deriving Show
 
 -- | A match variable is a concrete variable used when pattern matching, and
@@ -154,14 +155,14 @@ type MatchEnv = Map MatchVar Val
 --   clauses.
 type PatEnv = Map PatternVar Whnf
 
-data Val = Clos MatchEnv Env Conts Handler Term | Whnf Whnf
+data Val = Clos PatEnv MatchEnv Env Conts Handler Term | Whnf Whnf
 
 instance Show Val where
-    show (Clos _ env _ _ term) =
+    show (Clos _ _ env _ _ term) =
         "(clos " ++ show env ++ " " ++ show term ++ ")"
 
-data Abs = Abs MatchEnv Env Term
+data Abs = Abs PatEnv MatchEnv Env Term
 
 instance Show Abs where
-    show (Abs _ env term) =
+    show (Abs _ _ env term) =
         "(abstr " ++ show env ++ " " ++ show term ++ ")"

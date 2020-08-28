@@ -126,6 +126,7 @@ resolveExpr (AST.Var name) = do
 resolvePattern
     :: (MonadError String m, MonadReader (MatchVar, Map String MatchVar) m)
     => AST.Pattern -> (Syn.Pattern -> m a) -> m a
+resolvePattern AST.WildPat k = k Syn.WildPat
 resolvePattern (AST.VarPat name) k = do
     (mv, tbl) <- ask
     case tbl !? name of

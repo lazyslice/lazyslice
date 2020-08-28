@@ -9,7 +9,7 @@ data Sexp
     | List [Sexp]
 
 wordChar :: Stream s m Char => ParsecT s u m Char
-wordChar = alphaNum <|> oneOf "-:!?"
+wordChar = alphaNum <|> oneOf "-:!?_"
 
 word :: Stream s m Char => ParsecT s u m String
 word = do
@@ -105,6 +105,7 @@ elabExpr (List (f:args)) = do
 elabExpr _ = Left "Unknown expression form."
 
 elabPat :: Sexp -> Either String Pattern
+elabPat (Atom "_") = pure $ WildPat
 elabPat (Atom v) = pure $ VarPat v
 elabPat (List (Atom name:pats)) = do
     pats <- mapM elabPat pats
