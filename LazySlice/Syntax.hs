@@ -42,7 +42,7 @@ nextPV (PV i) = PV (i + 1)
 data CaseTree
     = Leaf Term
     | Intro PatternVar CaseTree -- ^ Introduce next parameter
-    | Split PatternVar [(String, Maybe [Int], CaseTree)]
+    | Split PatternVar [(String, [PatternVar], CaseTree)]
     -- var, ^ (C, var1..varN, rhs)
 
 data Term

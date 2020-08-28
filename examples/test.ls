@@ -72,3 +72,7 @@
 (defun index
     (((true)) t)
     (((false)) f))
+
+(: index (forall (i (Indexed true)) unit))
+(defun index
+    (((t)) trivial))

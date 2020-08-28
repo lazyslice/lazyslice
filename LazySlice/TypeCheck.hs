@@ -65,8 +65,7 @@ checkModule (Module decls) = go decls
             case getDef table name of
                 Nothing -> throwError $ "Not found: " ++ name
                 Just (ty, Undef) -> do
-                    tree <- elabPats (PV 0) empty
-                                (fmap toClause clauses) ty
+                    tree <- elabPats (PV 0) (fmap toClause clauses) ty
                     local (define name ty $ Head $ Fun name tree)
                         $ go decls
                 Just (_, _) -> throwError $ "Redefined: " ++ name
@@ -330,6 +329,12 @@ unifyNeu hdl [] hdr []
     | hdl == hdr = pure empty
     | otherwise =
         throwError $ "Unify fail: " ++ show hdl ++ " " ++ show hdr
+unifyNeu hdl [] hdr rs =
+    throwError
+        $ "Unify fail: " ++ show (WNeu hdl []) ++ " " ++ show (WNeu hdr rs)
+unifyNeu hdl ls hdr [] =
+    throwError
+        $ "Unify fail: " ++ show (WNeu hdl ls) ++ " " ++ show (WNeu hdr [])
 
 unifyVal :: Val -> Val -> Eval r PatEnv
 unifyVal t u = do
@@ -432,16 +437,9 @@ data Refutability
 
 elabPats
     :: (MonadError String m, MonadReader Table m)
-    => PatternVar
-    -> PatEnv
-    -> [Clause]
-    -> Whnf
-    -> m CaseTree
-elabPats _ _ [] _ = throwError "Incomplete pattern match"
-elabPats varGen subst (clauses@(C pctx e [] term:_)) ty = do
-    table <- ask
-    ty <-
-        liftEither $ run (prompt $ applySubstWhnf ty subst) table
+    => PatternVar -> [Clause] -> Whnf -> m CaseTree
+elabPats _ [] _ = throwError "Incomplete pattern match"
+elabPats varGen (clauses@(C pctx e [] term:_)) ty =
     case refut e of
         Irrefut vars -> do
             let pctx' = union pctx
@@ -451,15 +449,15 @@ elabPats varGen subst (clauses@(C pctx e [] term:_)) ty = do
             liftEither $ run (check pctx' [] term ty) table
             pure $ Leaf term
         Refut v ty -> do
-            (datacons, spine) <- case ty of
+            datacons <- case ty of
                 WNeu (TypeCon name) spine -> do
                     table <- ask
                     case datatypes table !? name of
                         Nothing ->
                             throwError $ "Undefined: " ++ name
-                        Just datacons -> pure (datacons, spine)
+                        Just datacons -> pure datacons
                 ty -> throwError $ "Not a datatype: " ++ show ty
-            cases <- split datacons v spine clauses
+            cases <- split datacons v ty clauses
             pure $ Split v cases
     where
         -- Find a constraint in the form (x / c v...).
@@ -472,15 +470,23 @@ elabPats varGen subst (clauses@(C pctx e [] term:_)) ty = do
         refut ((v, ty, WildPat):e) = refut e
 
         -- Split var on a datatype.
-        split [] var spine clauses = pure []
-        split ((name, conTy):datacons) var spine clauses = do
+        split [] var varTy clauses = pure []
+        split ((name, conTy):datacons) var varTy clauses = do
+            xs <- split datacons var varTy clauses
             (varGen, vts, outTy) <- inst varGen conTy
-            let vs = fmap (\(v, _) -> Whnf $ WNeu (PatVar v) []) vts
-            clauses' <- refine name var vts clauses
-            let subst' = insert var (WNeu (DataCon name) vs) subst
-            branch <- elabPats varGen subst' clauses' ty
-            xs <- split datacons var spine clauses
-            pure $ (name, undefined, branch):xs
+            table <- ask
+            case run (unifyWhnf outTy varTy) table of
+                Right subst -> do
+                    vts <-
+                        liftEither
+                            $ run (mapM (mapM (flip applySubstWhnf subst)) vts) table
+                    ty <- liftEither $ run (applySubstWhnf ty subst) table
+                    clauses' <- refine name var vts subst clauses
+                    table <- ask
+                    branch <- elabPats varGen clauses' ty
+                    pure $ (name, fmap fst vts, branch):xs
+                -- Type error means impossible case
+                Left e -> pure xs
 
         -- Instantiate the datacon's telescope type
         inst varGen (WPi a b) = do
@@ -492,10 +498,15 @@ elabPats varGen subst (clauses@(C pctx e [] term:_)) ty = do
         inst varGen ty@(WNeu _ _) = pure (varGen, [], ty)
 
         -- Remove clauses with impossible constraints.
-        refine name var vts [] = pure []
-        refine name var vts (C pctx e pats rhs:clauses) = do
+        refine name var vts subst [] = pure []
+        refine name var vts subst (C pctx e pats rhs:clauses) = do
+            table <- ask
+            e <- liftEither $ run (mapM (\(var, ty, pat) -> do
+                        ty <- applySubstWhnf ty subst
+                        pure (var, ty, pat)
+                    ) e) table
             maybe <- filt [] name var vts e
-            next <- refine name var vts clauses
+            next <- refine name var vts subst clauses
             case maybe of
                 Nothing -> pure next
                 Just (Nothing, e) ->
@@ -522,13 +533,13 @@ elabPats varGen subst (clauses@(C pctx e [] term:_)) ty = do
             rest <- tie vts pats
             pure $ (v, ty, pat):rest
 
-elabPats varGen subst clauses (WPi a b) = do
+elabPats varGen clauses (WPi a b) = do
         table <- ask
         a <- liftEither $ run (prompt $ whnfVal a) table
         b <- liftEither
             $ run (prompt $ whnfAbs [] handler b $ Pat varGen) table
         clauses <- liftEither $ intro a clauses
-        Intro varGen <$> elabPats (nextPV varGen) subst clauses b
+        Intro varGen <$> elabPats (nextPV varGen) clauses b
     where
         intro :: Whnf -> [Clause] -> Either String [Clause]
         intro _ [] = Right []
@@ -536,5 +547,5 @@ elabPats varGen subst clauses (WPi a b) = do
             rest <- intro a clauses
             Right $ C pctx ((varGen, a, pat):e) pats rhs : rest
         intro _ (C _ _ [] _ : _) = Left "Missing patterns"
-elabPats _ _ _ _ =
+elabPats _ _ _ =
     throwError "Pattern present, but type isn't a pi type"
