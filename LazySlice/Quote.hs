@@ -11,10 +11,16 @@ quoteTerm _ _ (Syn.Def name) = AST.Var name
 quoteTerm i vs (Syn.Lam _ t) =
         AST.Lam (getPartial vs' 0) (quoteTerm i vs' t)
     where vs' = push vs
-        -- Here, I generate a fresh variable for the lambda
-        -- parameter name
 quoteTerm i vs (Syn.Pair t u) =
     AST.Pair (quoteTerm i vs t) (quoteTerm i vs u)
+quoteTerm i vs (Syn.Pi t u) =
+        AST.Pi (getPartial vs' 0) (quoteTerm i vs t)
+            (quoteTerm i vs' u)
+    where vs' = push vs
+quoteTerm i vs (Syn.Sigma t u) =
+        AST.Sigma (getPartial vs' 0) (quoteTerm i vs t)
+            (quoteTerm i vs' u)
+    where vs' = push vs
 quoteTerm _ _ Syn.Triv = AST.Triv
 quoteTerm _ _ Syn.Unit = AST.Unit
 quoteTerm _ _ Syn.Universe = AST.Univ

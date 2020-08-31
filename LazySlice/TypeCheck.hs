@@ -1,7 +1,9 @@
 {-# LANGUAGE ApplicativeDo, FlexibleContexts, FlexibleInstances, FunctionalDependencies #-}
 module LazySlice.TypeCheck where
 
+import qualified LazySlice.Sexp as Sexp
 import LazySlice.Syntax
+import qualified LazySlice.Quote as Quote
 import Control.Monad.Except (MonadError, throwError, catchError, liftEither)
 import Control.Monad.Reader (MonadReader, ask, local)
 import Control.Monad.Trans (lift)
@@ -10,7 +12,7 @@ import Control.Monad.Trans.Except (ExceptT, runExcept)
 import Control.Monad.Trans.Reader (Reader, runReader, runReaderT)
 import Data.Map (Map, empty, singleton, (!?), insert, union, fromList)
 
-import Debug.Trace (trace)
+quote = Sexp.quoteSexp . Sexp.quoteExpr . Quote.quoteWhnf
 
 typecheck :: Module -> Either String ()
 typecheck modl = runExcept $ runReaderT (checkModule modl) $ Table empty empty empty
@@ -31,6 +33,14 @@ getDef table name = defs table !? name
 getDatatype :: Table -> String -> Maybe [(String, Whnf)]
 getDatatype table name = datatypes table !? name
 
+topCheck def ty = do
+    table <- ask
+    case run (check empty [] def ty) table of
+        Right r -> pure r
+        Left e ->
+            throwError
+                $ "Expected type: " ++ quote ty ++ "\n" ++ e
+
 checkModule :: (MonadError String m, MonadReader Table m) => Module -> m ()
 checkModule (Module decls) = go decls
     where
@@ -45,8 +55,7 @@ checkModule (Module decls) = go decls
                 Just (_, _) -> throwError $ "Redefined: " ++ name
         go (Declare name ty:decls) = do
             table <- ask
-            liftEither
-                $ run (check empty [] ty WUniverse) table
+            topCheck ty WUniverse
             ty <-
                 liftEither
                     $ run (whnf empty empty [] [] ty handler) table
@@ -56,8 +65,7 @@ checkModule (Module decls) = go decls
             case getDef table name of
                 Nothing -> throwError $ "Not found: " ++ name
                 Just (ty, Undef) -> do
-                    liftEither
-                        $ run (check empty [] def ty) table
+                    topCheck def ty
                     local (define name ty (Term def)) $ go decls
                 Just (_, _) -> throwError $ "Redefined: " ++ name
         go (Defun name clauses:decls) = do
@@ -161,7 +169,8 @@ getTele name = go 0
             | otherwise =
                 throwError $ "Invalid constructor type: " ++ name' ++ " not " ++ name
         go i ty =
-            throwError $ "Invalid constructor type: " ++ show ty
+            throwError
+                $ "Invalid constructor type: " ++ quote ty
 
 -- | Evaluate to WHNF.
 whnf
@@ -247,8 +256,7 @@ applySubstAbs :: Abs -> PatEnv -> Abs
 applySubstAbs (Abs metavars menv env t) subst =
     Abs (union metavars subst) menv env t
 
-applySubstWhnf (WNeu (PatVar pv) []) subst = do
-    trace "MetaVar" (pure ())
+applySubstWhnf (WNeu (PatVar pv) []) subst =
     case subst !? pv of
         Nothing -> pure $ WNeu (PatVar pv) []
         Just def -> pure $ def
@@ -308,7 +316,7 @@ unifyWhnf (WNeu (PatVar pv) []) b =
 unifyWhnf a (WNeu (PatVar pv) []) =
     pure $ singleton pv a
 unifyWhnf a b =
-    throwError $ "Unify fail: " ++ show a ++ " " ++ show b
+    throwError $ "Unify fail: " ++ quote a ++ " " ++ quote b
 
 unifyNeu :: Head -> [Val] -> Head -> [Val] -> Eval r PatEnv
 unifyNeu hdl (l:ls) hdr (r:rs) = do
@@ -331,10 +339,10 @@ unifyNeu hdl [] hdr []
         throwError $ "Unify fail: " ++ show hdl ++ " " ++ show hdr
 unifyNeu hdl [] hdr rs =
     throwError
-        $ "Unify fail: " ++ show (WNeu hdl []) ++ " " ++ show (WNeu hdr rs)
+        $ "Unify fail: " ++ quote (WNeu hdl []) ++ " " ++ quote (WNeu hdr rs)
 unifyNeu hdl ls hdr [] =
     throwError
-        $ "Unify fail: " ++ show (WNeu hdl ls) ++ " " ++ show (WNeu hdr [])
+        $ "Unify fail: " ++ quote (WNeu hdl ls) ++ " " ++ quote (WNeu hdr [])
 
 unifyVal :: Val -> Val -> Eval r PatEnv
 unifyVal t u = do
@@ -456,7 +464,7 @@ elabPats varGen (clauses@(C pctx e [] term:_)) ty =
                         Nothing ->
                             throwError $ "Undefined: " ++ name
                         Just datacons -> pure datacons
-                ty -> throwError $ "Not a datatype: " ++ show ty
+                ty -> throwError $ "Not a datatype: " ++ quote ty
             cases <- split datacons v ty clauses
             pure $ Split v cases
     where

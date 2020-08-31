@@ -9,20 +9,17 @@ import Data.Map (Map)
 
 data Module = Module
     { decls :: [Decl] }
-    deriving Show
 
 data Decl
     = Data String [(String, Term)]
     | Declare String Term
     | Define String Term
     | Defun String [([Pattern], Term)]
-    deriving Show
 
 data Pattern
     = ConPat String [Pattern]
     | VarPat MatchVar
     | WildPat
-    deriving Show
 
 -- | A match variable is a concrete variable used when pattern matching, and
 --   always maps to a term.
@@ -60,7 +57,6 @@ data Term
     | Universe
     | MatchVar MatchVar
     | Var Int -- ^ A variable is a De Bruijn index (which counts from the inside-out).
-    deriving Show
 
 data Def
     = Term Term
@@ -115,22 +111,6 @@ data Whnf
     | WUnit
     | WUniverse
 
-instance Show Whnf where
-    show (WCont _) = "<cont>"
-    show (WNeu hd spine) =
-        "(" ++ show hd ++ " " ++ show spine ++ ")"
-    show (WLam m a) =
-        "(lam " ++ show m ++ " " ++ show a ++ ")"
-    show (WPair a b) =
-        "(tuple " ++ show a ++ " " ++ show b ++ ")"
-    show (WPi a b) =
-        "(pi " ++ show a ++ " " ++ show b ++ ")"
-    show (WSigma a b) =
-        "(sigma " ++ show a ++ " " ++ show b ++ ")"
-    show WTriv = "trivial"
-    show WUnit = "unit"
-    show WUniverse = "type"
-
 -- | The environment of values.
 type Env = [Binding]
 
@@ -141,7 +121,6 @@ data Binding
     = Val Val
     | Free Int -- ^ A free variable is not a De Bruijn index, and it counts from the outside in.
     | Pat PatternVar
-    deriving Show
 
 -- | A handler catches an effect.
 type Handler = String -> Maybe Term
@@ -157,12 +136,4 @@ type PatEnv = Map PatternVar Whnf
 
 data Val = Clos PatEnv MatchEnv Env Conts Handler Term | Whnf Whnf
 
-instance Show Val where
-    show (Clos _ _ env _ _ term) =
-        "(clos " ++ show env ++ " " ++ show term ++ ")"
-
 data Abs = Abs PatEnv MatchEnv Env Term
-
-instance Show Abs where
-    show (Abs _ _ env term) =
-        "(abstr " ++ show env ++ " " ++ show term ++ ")"

@@ -2,6 +2,8 @@
 module LazySlice.Sexp where
 
 import LazySlice.AST
+import Control.Monad (join)
+import Data.List (intersperse)
 import Text.Parsec
 
 data Sexp
@@ -166,3 +168,8 @@ quoteExpr (Pair a b) =
 
 quoteBinder :: (String, Expr) -> Sexp
 quoteBinder (name, expr) = List [Atom name, quoteExpr expr]
+
+quoteSexp :: Sexp -> String
+quoteSexp (Atom s) = s
+quoteSexp (List sexps) =
+    "(" ++ join (intersperse " " (fmap quoteSexp sexps)) ++ ")"
