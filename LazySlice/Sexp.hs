@@ -110,3 +110,59 @@ elabPat (Atom v) = pure $ VarPat v
 elabPat (List (Atom name:pats)) = do
     pats <- mapM elabPat pats
     pure $ ConPat name pats
+
+quoteExpr :: Expr -> Sexp
+quoteExpr Univ = Atom "type"
+quoteExpr Unit = Atom "unit"
+quoteExpr Triv = Atom "trivial"
+quoteExpr (Var v) = Atom v
+quoteExpr (App f x) =
+        let (hd, spine) = go [x] f in
+        List $ Atom "apply" : quoteExpr f : fmap quoteExpr spine
+    where
+        go acc (App f x) = go (x:acc) f
+        go acc expr = (expr, acc)
+quoteExpr (Sigma name a b) =
+        let (binders, end) = go b in
+        List $
+            Atom "exists"
+                : (fmap quoteBinder ((name, a) : binders)
+                    ++ [quoteExpr end])
+    where
+        go (Sigma name a b) =
+            let (binders, end) = go b in
+            ((name, a) : binders, end)
+        go expr = ([], expr)
+quoteExpr (Pi name a b) =
+        let (binders, end) = go b in
+        List $
+            Atom "forall"
+                : (fmap quoteBinder ((name, a) : binders)
+                    ++ [quoteExpr end])
+    where
+        go (Pi name a b) =
+            let (binders, end) = go b in
+            ((name, a) : binders, end)
+        go expr = ([], expr)
+quoteExpr (Lam param body) =
+        let (params, body) = go body in
+        List
+            [ Atom "lambda"
+            , List $ Atom param : params
+            , quoteExpr body ]
+    where
+        go (Lam param body) =
+            let (params, body) = go body in
+            (Atom param : params, body)
+        go expr = ([], expr)
+quoteExpr (Pair a b) =
+        let ls = quoteExpr a : go b in
+        List $ Atom "tuple" : ls
+    where
+        go (Pair a b) =
+            let ls = go b in
+            quoteExpr a : ls
+        go expr = [quoteExpr expr]
+
+quoteBinder :: (String, Expr) -> Sexp
+quoteBinder (name, expr) = List [Atom name, quoteExpr expr]
