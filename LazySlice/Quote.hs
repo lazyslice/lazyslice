@@ -28,7 +28,7 @@ quoteTerm i vs (Syn.Var v) = case get vs v of
     Right v -> AST.Var v
     Left off -> case i !! off of
         Val v -> quoteVal v
-        Free fv -> AST.Var $ "fv" ++ show fv
+        Free fv -> AST.Var $ vars !! fv
         Pat pv -> AST.Var $ show pv
 
 quoteVal :: Syn.Val -> AST.Expr
@@ -44,7 +44,7 @@ quoteWhnf (Syn.WNeu hd spine) = go spine
     where
         go [] = case hd of
             DataCon s -> AST.Var s
-            FreeVar fv -> AST.Var $ "fv" ++ show fv
+            FreeVar fv -> AST.Var $ vars !! fv
             PatVar pv -> AST.Var $ show pv
             MatVar mv -> AST.Var $ show mv
             TypeCon s -> AST.Var s
@@ -65,6 +65,7 @@ quoteWhnf Syn.WTriv = AST.Triv
 quoteWhnf Syn.WUnit = AST.Unit
 quoteWhnf Syn.WUniverse = AST.Univ
 
+-- | Taken from definition of letters: http://dev.stephendiehl.com/fun/006_hindley_milner.html
 vars :: [String]
 vars = do
     times <- [1..]

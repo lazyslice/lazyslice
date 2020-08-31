@@ -117,9 +117,10 @@ instance MonadError [Char] (Eval r) where
             Left e -> eval $ handle e
 
 inScope :: (Int -> Eval r a) -> Eval r a
-inScope f =
+inScope f = do
+    idx <- fmap index ask
     local (\s -> s { index = index s + 1 })
-        (ask >>= \s -> f $ index s)
+        (f idx)
 
 prompt :: Eval Whnf Whnf -> Eval r Whnf
 prompt (Eval m) = Eval $ resetT m
@@ -336,7 +337,7 @@ unifyNeu hdl ls (PatVar pv) []
 unifyNeu hdl [] hdr []
     | hdl == hdr = pure empty
     | otherwise =
-        throwError $ "Unify fail: " ++ show hdl ++ " " ++ show hdr
+        throwError $ "Unify fail: " ++ quote (WNeu hdl []) ++ " " ++ quote (WNeu hdr [])
 unifyNeu hdl [] hdr rs =
     throwError
         $ "Unify fail: " ++ quote (WNeu hdl []) ++ " " ++ quote (WNeu hdr rs)
